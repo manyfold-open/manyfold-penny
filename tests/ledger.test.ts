@@ -181,6 +181,34 @@ describe('expenses', () => {
   });
 });
 
+describe('receipts', () => {
+  it('keeps the receipt items on the entry so they can be drawn later', async () => {
+    const path = await newGroup('!receipt:x');
+    const split = {
+      method: 'items',
+      everyone: [RAY, KEN, MEI, ZACK],
+      items: [
+        { amount: 1900, members: [RAY], label: 'Fish and chips' },
+        { amount: 1700, members: [KEN], label: 'Burger' },
+        { amount: 1200, label: 'Scotch egg' },
+        { amount: 1000, members: [MEI, ZACK], label: 'Soup' },
+        { amount: 3000, label: 'Sharing platter' },
+      ],
+      extra: 1100,
+    };
+    const seq = await addConfirmed(path, { createdBy: RAY, amount: 9900, paidBy: RAY, split, receiptRef: 'att_123' });
+    const [entry] = (await call('GET', `${path}/entries/${seq}`)).json.versions;
+    expect(entry.split).toEqual(split);
+    expect(entry.receiptRef).toBe('att_123');
+    expect(Object.fromEntries(entry.shares.map((s: { member: string; amount: number }) => [s.member, s.amount]))).toEqual({
+      [RAY]: 3319,
+      [KEN]: 3094,
+      [MEI]: 1744,
+      [ZACK]: 1743,
+    });
+  });
+});
+
 describe('edits and deletions', () => {
   it('keeps the old version and shows it next to the proposed change', async () => {
     const path = await newGroup('!edit:x');
@@ -246,7 +274,10 @@ describe('settling up', () => {
     expect(balances.transfers.length).toBeLessThanOrEqual(3);
     const stats = (await call('GET', `${path}/stats`)).json;
     expect(stats).toMatchObject({ total: 240000, count: 4, members: 4 });
-    expect(stats.byCategory[0]).toEqual({ category: 'accommodation', amount: 96000 });
+    expect(stats.byCategory[0]).toEqual({ category: 'accommodation', amount: 96000, count: 1 });
+    expect(stats.largest).toMatchObject({ category: 'accommodation', amount: 96000 });
+    expect(stats.payers).toHaveLength(4);
+    expect(stats.firstDay).toBe(stats.lastDay);
   });
 });
 

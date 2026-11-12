@@ -59,6 +59,8 @@ export interface Entry {
   payers: Line[];
   shares: Line[];
   receiptRef: string | null;
+  /** How the amount was split, as given. Receipts keep their items here. Null for settlements and voids. */
+  split: SplitSpec | null;
   createdBy: string;
   confirmedBy: string | null;
   createdAt: string;
@@ -403,6 +405,7 @@ function expenseEntry(row: ExpenseRow, lines: { payers: Line[]; shares: Line[] }
     payers: lines.payers,
     shares: lines.shares,
     receiptRef: row.receipt_ref,
+    split: row.split ? (JSON.parse(row.split) as SplitSpec | null) : null,
     createdBy: row.created_by,
     confirmedBy: row.confirmed_by,
     createdAt: row.created_at,
@@ -423,6 +426,7 @@ function settlementEntry(row: SettlementRow): Entry {
     payers: [{ member: row.from_member, amount: row.amount }],
     shares: [{ member: row.to_member, amount: row.amount }],
     receiptRef: null,
+    split: null,
     createdBy: row.created_by,
     confirmedBy: row.confirmed_by,
     createdAt: row.created_at,
@@ -868,20 +872,30 @@ export async function stats(env: Env, groupId: string, range: { from?: string; t
   const to = range.to ? day(range.to) : '9999-12-31';
   const signed = `CASE kind WHEN 'refund' THEN -amount ELSE amount END`;
   const where = `group_id = ? AND status = 'active' AND spent_on BETWEEN ? AND ?`;
-  const [totals, categories, days] = await env.DB.batch<Record<string, unknown>>([
-    env.DB.prepare(`SELECT COALESCE(SUM(${signed}), 0) AS total, COUNT(*) AS count FROM ledger_expenses WHERE ${where}`).bind(
-      groupId,
-      from,
-      to,
-    ),
+  const [totals, categories, days, payers, largest] = await env.DB.batch<Record<string, unknown>>([
     env.DB.prepare(
-      `SELECT category, SUM(${signed}) AS amount FROM ledger_expenses WHERE ${where} GROUP BY category ORDER BY amount DESC`,
+      `SELECT COALESCE(SUM(${signed}), 0) AS total, COUNT(*) AS count, MIN(spent_on) AS first_day, MAX(spent_on) AS last_day
+         FROM ledger_expenses WHERE ${where}`,
+    ).bind(groupId, from, to),
+    env.DB.prepare(
+      `SELECT category, SUM(${signed}) AS amount, COUNT(*) AS count FROM ledger_expenses WHERE ${where}
+       GROUP BY category ORDER BY amount DESC`,
     ).bind(groupId, from, to),
     env.DB.prepare(
       `SELECT spent_on AS day, SUM(${signed}) AS amount FROM ledger_expenses WHERE ${where} GROUP BY spent_on ORDER BY spent_on`,
     ).bind(groupId, from, to),
+    env.DB.prepare(
+      `SELECT p.member_id AS member, COUNT(*) AS count, SUM(p.amount) AS amount
+         FROM ledger_payers p JOIN ledger_expenses e ON e.id = p.expense_id
+        WHERE e.group_id = ? AND e.status = 'active' AND e.kind = 'expense' AND e.spent_on BETWEEN ? AND ?
+        GROUP BY p.member_id ORDER BY count DESC, amount DESC, p.member_id`,
+    ).bind(groupId, from, to),
+    env.DB.prepare(
+      `SELECT seq, description, category, amount, spent_on AS spentOn FROM ledger_expenses
+        WHERE ${where} AND kind = 'expense' ORDER BY amount DESC, seq LIMIT 1`,
+    ).bind(groupId, from, to),
   ]);
-  const head = totals.results[0] as { total: number; count: number };
+  const head = totals.results[0] as { total: number; count: number; first_day: string | null; last_day: string | null };
   const memberCount = (await listMembers(env, groupId)).filter((m) => m.active && !m.isGuest).length;
   return {
     currency: group.currency,
@@ -889,8 +903,13 @@ export async function stats(env: Env, groupId: string, range: { from?: string; t
     total: head.total,
     count: head.count,
     members: memberCount,
-    byCategory: categories.results as { category: string; amount: number }[],
+    firstDay: head.first_day,
+    lastDay: head.last_day,
+    byCategory: categories.results as { category: string; amount: number; count: number }[],
     byDay: days.results as { day: string; amount: number }[],
+    /** Who paid most often (expenses only, not refunds). */
+    payers: payers.results as { member: string; count: number; amount: number }[],
+    largest: (largest.results[0] ?? null) as { seq: number; description: string; category: string; amount: number; spentOn: string } | null,
   };
 }
 

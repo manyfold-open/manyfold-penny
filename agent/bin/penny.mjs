@@ -4,12 +4,9 @@
 //   node bin/penny.mjs <command> [args] [--flag value ...]
 //
 // Prints the ledger's JSON reply. Exits 1 with {"error": ...} on failure.
-// Reads the API base and key from .penny/config.json next to this folder
-// ({"apiBase": "https://...", "apiKey": "..."}) or from PENNY_API_BASE / PENNY_API_KEY.
+// Configuration: see ledger.mjs.
 
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { LedgerError, enc, ledger } from './ledger.mjs';
 
 const HELP = `penny <command> ...
 
@@ -49,20 +46,6 @@ Amounts are integers in the currency's minor unit (pence). Split methods:
   equal {members, adjustments?}  exact {amounts}  percent {percents}  shares {shares}
   items {everyone, items:[{amount, members?, label?}], extra?}`;
 
-function config() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  let file = {};
-  try {
-    file = JSON.parse(readFileSync(join(here, '..', '.penny', 'config.json'), 'utf8'));
-  } catch {
-    // fall back to the environment
-  }
-  const apiBase = process.env.PENNY_API_BASE || file.apiBase;
-  const apiKey = process.env.PENNY_API_KEY || file.apiKey;
-  if (!apiBase || !apiKey) fail('not_configured', 'Missing .penny/config.json (apiBase, apiKey).');
-  return { apiBase: apiBase.replace(/\/+$/, ''), apiKey };
-}
-
 function fail(code, message) {
   process.stdout.write(`${JSON.stringify({ error: { code, message } })}\n`);
   process.exit(1);
@@ -99,23 +82,15 @@ function need(value, what) {
   return value;
 }
 
-const enc = encodeURIComponent;
-
 async function request(method, path, body) {
-  const { apiBase, apiKey } = config();
-  let response;
   try {
-    response = await fetch(`${apiBase}/api/ledger${path}`, {
-      method,
-      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    const { ok, data } = await ledger(method, path, body);
+    process.stdout.write(`${JSON.stringify(data)}\n`);
+    if (!ok) process.exit(1);
   } catch (error) {
-    return fail('unreachable', `The ledger did not answer: ${error.message}`);
+    if (error instanceof LedgerError) fail(error.code, error.message);
+    throw error;
   }
-  const text = await response.text();
-  process.stdout.write(`${text}\n`);
-  if (!response.ok) process.exit(1);
 }
 
 async function main() {

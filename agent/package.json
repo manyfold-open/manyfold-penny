@@ -1,0 +1,13 @@
+{
+  "name": "penny-agent",
+  "private": true,
+  "type": "module",
+  "description": "What runs in the Penny agent's workspace: the ledger tool and the card renderer.",
+  "scripts": {
+    "setup": "node -e \"import('./cards/png.mjs').then((m) => m.ensureFonts()).then(() => console.log('fonts ready'))\"",
+    "demo": "node cards/demo.mjs"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2"
+  }
+}
