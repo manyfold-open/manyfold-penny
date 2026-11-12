@@ -325,3 +325,44 @@ describe('memory and payment details', () => {
     expect(raw!.info_ct).not.toContain('Monzo');
   });
 });
+
+describe('many people at once', () => {
+  it('creates a new group once when two first messages arrive together', async () => {
+    const path = `/groups/${enc('!race:x')}`;
+    const [a, b] = await Promise.all([
+      call('PUT', path, { name: 'race', currency: 'GBP' }),
+      call('PUT', path, { name: 'race', currency: 'GBP' }),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect((await call('GET', path)).json.group.currency).toBe('GBP');
+  });
+
+  it('gives guests added at the same time different ids', async () => {
+    const path = await newGroup('!guests-race:x');
+    const results = await Promise.all(
+      ['An', 'Bo', 'Cy'].map((name) => call('POST', `${path}/guests`, { name, sponsorId: KEN })),
+    );
+    expect(results.map((r) => r.status)).toEqual([201, 201, 201]);
+    expect(new Set(results.map((r) => r.json.guest.id)).size).toBe(3);
+  });
+
+  it('lets one of two simultaneous edits through and answers the other with a 409', async () => {
+    const path = await newGroup('!edit-race:x');
+    const seq = await addConfirmed(path, {
+      createdBy: ZACK,
+      description: 'Taxi',
+      category: 'transport',
+      amount: 4000,
+      paidBy: ZACK,
+    });
+    const [a, b] = await Promise.all([
+      call('POST', `${path}/expenses/${seq}/edit`, { createdBy: MEI, amount: 4200 }),
+      call('POST', `${path}/expenses/${seq}/edit`, { createdBy: KEN, amount: 4400 }),
+    ]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses[0]).toBeLessThan(300);
+    expect(statuses[1]).toBe(409);
+    const pending = (await call('GET', `${path}/pending`)).json.entries;
+    expect(pending.filter((e: { seq: number }) => e.seq === seq)).toHaveLength(1);
+  });
+});

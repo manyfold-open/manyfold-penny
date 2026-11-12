@@ -39,7 +39,7 @@ import {
   verifyAgent,
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
-import ledger from './ledger/routes';
+import ledger, { concurrentChange } from './ledger/routes';
 
 const SERVICE = 'manyfold-penny';
 
@@ -103,6 +103,8 @@ app.onError((error, c) => {
       ? c.json({ error: { code: 'manyfold_unavailable', message: error.message } }, 502)
       : c.json({ error: { code: 'manyfold_rejected', message: error.message } }, 400);
   }
+  const raced = c.req.path.startsWith('/api/ledger/') ? concurrentChange(error) : null;
+  if (raced) return c.json({ error: { code: raced.code, message: raced.message } }, 409);
   console.error('unhandled', error);
   return c.json({ error: { code: 'internal', message: 'Something went wrong.' } }, 500);
 });
