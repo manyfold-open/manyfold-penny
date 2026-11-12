@@ -41,6 +41,19 @@ type Ctx = Context<{ Bindings: Env }>;
 
 const ledger = new Hono<{ Bindings: Env }>();
 
+/**
+ * Several people can talk at once, and each message is its own agent turn, so two turns can
+ * change the same entry together (two edits of #21 at the same moment). The UNIQUE keys on
+ * the ledger tables let only one through. This turns the other one's constraint error into
+ * a 409 the agent can explain, instead of an internal error.
+ */
+export function concurrentChange(error: unknown): HttpError | null {
+  const message = error instanceof Error ? error.message : String(error);
+  return /UNIQUE constraint failed|SQLITE_CONSTRAINT/i.test(message)
+    ? new HttpError(409, 'concurrent_change', 'Someone changed this at the same moment. Look again and retry.')
+    : null;
+}
+
 ledger.use('*', async (c, next) => {
   const key = (c.env.PENNY_API_KEY ?? '').trim();
   if (!key) throw new HttpError(503, 'ledger_disabled', 'The ledger is off until PENNY_API_KEY is set.');
@@ -51,6 +64,7 @@ ledger.use('*', async (c, next) => {
   }
   await next();
 });
+
 
 async function body(c: Ctx): Promise<Record<string, unknown>> {
   const parsed = await c.req.json().catch(() => null);

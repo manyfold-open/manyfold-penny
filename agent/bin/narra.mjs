@@ -6,7 +6,8 @@
 //   node bin/narra.mjs members --room <room_id>
 //   node bin/narra.mjs send-image --room <room_id> --file <path>
 //   node bin/narra.mjs send-text --room <room_id> --text "..."
-//   node bin/narra.mjs messages --room <room_id> [--limit 20]
+//   node bin/narra.mjs messages --room <room_id> [--limit 30] [--start <iso>] [--end <iso>]
+//        [--keyword <text>]... [--from <pagination token>] [--dir b|f] [--include-attachments]
 //   node bin/narra.mjs download --room <room_id> --event <event_id> --output <path>
 //
 // Prints JSON. Exits 1 with {"error": ...} on failure.
@@ -31,18 +32,36 @@ function tokenFile() {
   return join(dir, agents[0], 'agent-runtime-token');
 }
 
+// Flags that may be given more than once. They come back as an array.
+const REPEATABLE = new Set(['keyword']);
+
 function parse(argv) {
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const name = argv[i].replace(/^--/, '');
     const next = argv[i + 1];
-    if (next === undefined || next.startsWith('--')) flags[name] = true;
-    else {
-      flags[name] = next;
+    let value = true;
+    if (next !== undefined && !next.startsWith('--')) {
+      value = next;
       i++;
     }
+    if (REPEATABLE.has(name)) (flags[name] ??= []).push(value);
+    else flags[name] = value;
   }
   return flags;
+}
+
+/** narra-cli im messages arguments: the room's history, newest first, in pages of up to 100. */
+function messageArgs(flags) {
+  const args = ['im', 'messages', '--room-id', need(flags, 'room'), '--limit', String(flags.limit ?? 30)];
+  for (const name of ['start', 'end', 'from', 'dir']) {
+    if (typeof flags[name] === 'string') args.push(`--${name}`, flags[name]);
+  }
+  for (const keyword of flags.keyword ?? []) {
+    if (typeof keyword === 'string' && keyword !== '') args.push('--keyword', keyword);
+  }
+  if (flags['include-attachments'] === true) args.push('--include-attachments');
+  return args;
 }
 
 const need = (flags, name) => {
@@ -116,7 +135,7 @@ switch (command) {
     cli(['im', 'send', '--room-id', need(flags, 'room'), '--text', need(flags, 'text')]);
     break;
   case 'messages':
-    cli(['im', 'messages', '--room-id', need(flags, 'room'), '--limit', String(flags.limit ?? 20)]);
+    cli(messageArgs(flags));
     break;
   case 'download':
     cli(['im', 'attachments', 'download', '--room-id', need(flags, 'room'), '--event-id', need(flags, 'event'), '--output', need(flags, 'output')]);

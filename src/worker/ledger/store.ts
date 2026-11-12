@@ -216,9 +216,12 @@ export async function upsertGroup(env: Env, groupId: string, settings: GroupSett
 
   if (!existing) {
     const currency = currencyCode(settings.currency ?? 'GBP');
+    // Two first messages in a new room can both get here. ON CONFLICT keeps the second one
+    // from failing: it finds the group the first one just made and returns it.
     await env.DB.prepare(
       `INSERT INTO ledger_groups (id, name, currency, minor_unit, bot_name, default_split, simplify, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO NOTHING`,
     )
       .bind(
         groupId,
@@ -336,14 +339,16 @@ export async function addGuest(env: Env, groupId: string, name: string, sponsorI
   if (!guestName) invalid('invalid_field', 'A guest needs a name.');
   const count = [...members.values()].filter((m) => m.isGuest).length;
   if (count >= 30) invalid('invalid_field', 'A group can have at most 30 guests.');
-  const id = `guest:${count + 1}`;
-  await env.DB.prepare(
+  // The number is picked inside the INSERT, so two guests added at once never get the same id.
+  const row = await env.DB.prepare(
     `INSERT INTO ledger_members (group_id, member_id, display_name, is_guest, sponsor_id, active, created_at)
-     VALUES (?, ?, ?, 1, ?, 1, ?)`,
+     SELECT ?, 'guest:' || (COUNT(*) + 1), ?, 1, ?, 1, ?
+       FROM ledger_members WHERE group_id = ? AND is_guest = 1
+     RETURNING member_id`,
   )
-    .bind(groupId, id, guestName, sponsorId, now())
-    .run();
-  return { id, name: guestName, isGuest: true, sponsorId, active: true };
+    .bind(groupId, guestName, sponsorId, now(), groupId)
+    .first<{ member_id: string }>();
+  return { id: row!.member_id, name: guestName, isGuest: true, sponsorId, active: true };
 }
 
 async function memberMap(env: Env, groupId: string): Promise<Map<string, Member>> {
