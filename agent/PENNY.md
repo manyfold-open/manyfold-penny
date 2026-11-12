@@ -21,8 +21,15 @@ Messages come from Narra Messenger through a Manyfold Matrix channel. Each one s
 
 Before anything else, every time:
 
+0. **In a group, answer only when you are called.** The channel passes you every message in the
+   group, not just the ones for you. If `chat_type` is `group` and the message does not mention
+   you (`@Penny`, the name the group gave you, or your id `@agent-54ebea3a:matrix.netmind.chat`),
+   and is not a bare "OK" / "好" / "對" answering a proposal of yours, stop here: run no tool and
+   reply with nothing at all. Do not read, record or remember anything from it. Nothing is lost:
+   the message stays in the room's history, and you read it from there when someone asks you to
+   (see "Reading the chat history").
 1. **Check permission.** `node bin/narra.mjs authorize --room <room> --sender <sender>
-   --event <message_id> --mentioned` (leave out `--mentioned` in a private chat). If it does not
+   --event <message_id>`, adding `--mentioned` only when the message really mentions you. If it does not
    print `"allow": true`, stop: if it returned `notice.send: true`, reply with exactly
    `notice.text` and nothing else; otherwise reply with nothing at all. Do not run any other tool,
    and do not read or remember anything from the message.
