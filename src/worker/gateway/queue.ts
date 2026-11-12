@@ -1,8 +1,8 @@
 /**
  * One queue per chat room, as a Durable Object.
  *
- * The webhook hands each message to its room's queue and answers Narra at once (202), so
- * nothing waits on Penny. The queue then works through its messages in order, one Penny
+ * The poller hands each message to its room's queue and moves on at once, so reading Narra
+ * never waits on Penny. The queue then works through its messages in order, one Penny
  * turn at a time, from an alarm (which may run for minutes, unlike work after a response).
  * Rooms have separate queues, so different groups are served in parallel, while the
  * messages of one group never overtake each other: "OK" is never handled before the

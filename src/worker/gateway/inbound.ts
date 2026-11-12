@@ -1,16 +1,12 @@
 /**
- * What the gateway accepts from Narra, normalised into one shape.
+ * One Narra message, normalised. The poller builds it from a Matrix room event as Narra's
+ * chat API returns it:
  *
- * Two payloads are understood, so the webhook can be pointed at this Worker without
- * knowing ahead of time exactly how Narra wraps its events:
+ *   { event: { room_id, event_id, sender, origin_server_ts, type: "m.room.message",
+ *              content: { msgtype, body, "m.mentions": { user_ids } } },
+ *     room_name, chat_type ("group" | "dm"), sender_name }
  *
- * 1. A Matrix room event, alone or under `event`:
- *      { room_id, event_id, sender, origin_server_ts, type: "m.room.message",
- *        content: { msgtype, body, "m.mentions": { user_ids } } }
- *    plus optional `room_name`, `chat_type` ("group" | "dm") and `sender_name` next to it.
- * 2. The plain shape this file exports as InboundMessage (camelCase or snake_case keys).
- *
- * Anything else is rejected with a 400, so a payload change shows up at once.
+ * Events that are not text messages (joins, reactions, encrypted events) give null.
  */
 
 export interface InboundMessage {

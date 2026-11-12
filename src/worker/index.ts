@@ -14,7 +14,6 @@
  *   DELETE /api/agents/:agentId/messages    admin  reset the conversation
  *   POST   /api/agents/:agentId/chat        admin  one chat turn (text/event-stream)
  *   *      /api/ledger/*                    key    the ledger the Penny agent uses (see ledger/routes.ts)
- *   POST   /api/narra/events                key    Narra webhook: sort, queue per room, Penny answers (see gateway/)
  *
  * "admin" routes require the x-admin-password header — but only when the
  * ADMIN_PASSWORD secret is set. Without it the app is open, which is what makes
@@ -41,18 +40,14 @@ import {
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import ledger, { concurrentChange } from './ledger/routes';
-import gateway from './gateway/routes';
+import { gatewayEnabled } from './gateway/poller';
 
 export { RoomQueue } from './gateway/queue';
+export { NarraPoller } from './gateway/poller';
 
 const SERVICE = 'manyfold-penny';
 
-// Machine-to-machine routes with their own bearer secret: the Penny agent (ledger) and
-// Narra (gateway webhook). They skip the browser Origin check and the admin password.
-const isLedger = (url: string): boolean => {
-  const path = new URL(url).pathname;
-  return path.startsWith('/api/ledger/') || path === '/api/narra/events';
-};
+const isLedger = (url: string): boolean => new URL(url).pathname.startsWith('/api/ledger/');
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -188,7 +183,6 @@ app.post('/api/agents/:agentId/chat', async (c) => {
 });
 
 app.route('/api/ledger', ledger);
-app.route('/api/narra', gateway);
 
 app.all('/api/*', () => {
   throw new HttpError(404, 'not_found', 'No such API route.');
@@ -197,4 +191,14 @@ app.all('/api/*', () => {
 // Anything else that reaches the Worker is a static asset (or the SPA fallback).
 app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
 
-export default app;
+/**
+ * The cron trigger keeps the Narra poller running (see gateway/poller.ts). It is a no-op
+ * call when the gateway is off, apart from stopping a poller that was left running.
+ */
+async function scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  if (!env.NARRA_POLLER) return;
+  if (!gatewayEnabled(env) && !(env.NARRA_GATEWAY ?? '').trim()) return;
+  await env.NARRA_POLLER.get(env.NARRA_POLLER.idFromName('narra')).fetch('https://narra-poller/kick');
+}
+
+export default { fetch: app.fetch, scheduled };

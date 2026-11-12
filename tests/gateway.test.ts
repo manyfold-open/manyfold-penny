@@ -2,12 +2,13 @@
  * The Narra gateway: parsing, the filter, the per-room queue and the webhook route.
  */
 import { describe, expect, it, vi } from 'vitest';
-import app from '../src/worker/index';
 import { classify } from '../src/worker/gateway/filter';
 import { parseInbound, type InboundMessage } from '../src/worker/gateway/inbound';
 import { drain, enqueue, MAX_ATTEMPTS, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
 import { txnId } from '../src/worker/gateway/reply';
-import { FakeD1 } from './support/fake-d1';
+import { tick, TICK_MS, ACTIVE_EVERY_MS, type Sink } from '../src/worker/gateway/poller';
+import type { NarraApi, NarraEvent } from '../src/worker/gateway/narra-api';
+import { NarraError } from '../src/worker/gateway/reply';
 
 const BOT = { matrixId: '@agent-54ebea3a:matrix.netmind.chat', names: ['Penny', '小胖'] };
 
@@ -191,64 +192,120 @@ describe('txn ids', () => {
   });
 });
 
-describe('the webhook', () => {
-  const SECRET = 'narra-webhook-secret-0123456789';
-  const queued: unknown[] = [];
-  const ROOM_QUEUE = {
-    idFromName: (name: string) => name,
-    get: () => ({
-      fetch: async (_url: string, init: RequestInit) => {
-        queued.push(JSON.parse(String(init.body)));
-        return Response.json({ result: 'queued' });
-      },
-    }),
-  };
-  const env = {
-    DB: new FakeD1(),
-    ASSETS: { fetch: async () => new Response('') },
-    NARRA_WEBHOOK_SECRET: SECRET,
-    ROOM_QUEUE,
-  };
-  const ctx = { waitUntil: () => undefined, passThroughOnException: () => undefined } as unknown as ExecutionContext;
-  const post = (body: unknown, key: string | null = SECRET, envOverride: object = {}) =>
-    app.fetch(
-      new Request('https://penny.test/api/narra/events', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
-        body: JSON.stringify(body),
-      }),
-      { ...env, ...envOverride },
-      ctx,
-    );
-  const event = (body: string) => ({
-    room_id: '!r:x',
-    event_id: `$${body}`,
-    sender: '@mei:x',
+describe('the poller', () => {
+  const PENNY = '@agent-54ebea3a:matrix.netmind.chat';
+  const room = (roomId: string, type: 'group' | 'dm' = 'group') => ({
+    roomId,
+    type,
+    title: '倫敦',
+    memberCount: 4,
+    names: { '@mei:x': 'Mei' },
+  });
+  const text = (id: string, body: string, sender = '@mei:x'): NarraEvent => ({
+    event_id: id,
+    sender,
+    origin_server_ts: Date.parse('2026-11-12T17:00:00Z'),
+    type: 'm.room.message',
     content: { msgtype: 'm.text', body },
   });
 
-  it('is off without a secret and needs the right one', async () => {
-    expect((await post(event('@Penny hi'), SECRET, { NARRA_WEBHOOK_SECRET: undefined })).status).toBe(503);
-    expect((await post(event('@Penny hi'), null)).status).toBe(401);
-    expect((await post(event('@Penny hi'), 'wrong')).status).toBe(401);
+  const fakeApi = (pages: Record<string, NarraEvent[]>) => {
+    const calls: string[] = [];
+    const api: NarraApi = {
+      rooms: async () => {
+        calls.push('rooms');
+        return { agentId: PENNY, rooms: Object.keys(pages).map((id) => room(id)) };
+      },
+      head: async (roomId) => {
+        calls.push(`head ${roomId}`);
+        return 't0';
+      },
+      after: async (roomId, from) => {
+        calls.push(`after ${roomId} ${from}`);
+        const events = pages[roomId].splice(0);
+        return { events, next: events.length ? `t${from.slice(1) + 1}` : null };
+      },
+    };
+    return { api, calls };
+  };
+
+  const sink = () => {
+    const delivered: { text: string; verdict: string; name: string }[] = [];
+    const s: Sink = {
+      botNames: async () => ['小胖'],
+      deliver: async (m, verdict) => {
+        delivered.push({ text: m.text, verdict, name: m.senderName });
+      },
+      log: () => undefined,
+    };
+    return { s, delivered };
+  };
+
+  it('starts each room from now, then passes on only what Penny should see', async () => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api, calls } = fakeApi(pages);
+    const { s, delivered } = sink();
+    let now = 1_000_000;
+
+    expect(await tick(store, api, s, now)).toBe(TICK_MS);
+    expect(calls).toEqual(['rooms', 'head !a:x']);
+
+    pages['!a:x'].push(
+      text('$1', '今晚吃什麼'),
+      text('$2', '我剛付了晚餐 80'),
+      text('$3', '@小胖 誰欠誰'),
+      text('$4', '@Penny 好的', PENNY),
+      { event_id: '$5', sender: '@ken:x', type: 'm.room.encrypted', content: { ciphertext: '...' } },
+      { event_id: '$6', sender: '@ken:x', type: 'm.room.member', content: { membership: 'join' } },
+    );
+    now += ACTIVE_EVERY_MS;
+    await tick(store, api, s, now);
+    expect(calls.at(-1)).toBe('after !a:x t0');
+    expect(delivered).toEqual([
+      { text: '我剛付了晚餐 80', verdict: 'expense', name: 'Mei' },
+      { text: '@小胖 誰欠誰', verdict: 'called', name: 'Mei' },
+    ]);
   });
 
-  it('queues what Penny should see and answers at once', async () => {
-    queued.length = 0;
-    const res = await post(event('@Penny 誰欠誰'));
-    expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ result: 'queued', verdict: 'called' });
-    expect(queued).toHaveLength(1);
+  it('keeps its place when nothing new arrived', async () => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api, calls } = fakeApi(pages);
+    const { s } = sink();
+    let now = 1_000_000;
+    await tick(store, api, s, now);
+    now += ACTIVE_EVERY_MS;
+    await tick(store, api, s, now);
+    now += ACTIVE_EVERY_MS * 10;
+    await tick(store, api, s, now);
+    expect(calls.filter((c) => c.startsWith('after'))).toEqual(['after !a:x t0', 'after !a:x t0']);
   });
 
-  it('skips chatter without queueing anything', async () => {
-    queued.length = 0;
-    const res = await post(event('今晚吃什麼'));
-    expect(await res.json()).toEqual({ result: 'skipped' });
-    expect(queued).toHaveLength(0);
+  it('reads at most one room per tick, most overdue first', async () => {
+    const store = new MemoryStore();
+    const { api, calls } = fakeApi({ '!a:x': [], '!b:x': [], '!c:x': [] });
+    const { s } = sink();
+    const now = 1_000_000;
+    for (let i = 0; i < 3; i++) await tick(store, api, s, now + i * TICK_MS);
+    expect(calls).toEqual(['rooms', 'head !a:x', 'head !b:x', 'head !c:x']);
   });
 
-  it('rejects a malformed event', async () => {
-    expect((await post({ hello: 'world' })).status).toBe(400);
+  it('backs a room off when Narra fails, without stopping the others', async () => {
+    const store = new MemoryStore();
+    const { api } = fakeApi({ '!a:x': [], '!b:x': [] });
+    const { s } = sink();
+    const failing: NarraApi = {
+      ...api,
+      head: async (roomId) => {
+        if (roomId === '!a:x') throw new NarraError('HTTP 429', true);
+        return 't0';
+      },
+    };
+    const now = 1_000_000;
+    await tick(store, failing, s, now);
+    await tick(store, failing, s, now + TICK_MS);
+    expect(await store.get('room:!b:x')).toMatchObject({ cursor: 't0' });
+    expect(((await store.get('room:!a:x')) as { nextPollAt: number }).nextPollAt).toBeGreaterThan(now + TICK_MS);
   });
 });

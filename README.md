@@ -170,27 +170,37 @@ and must not let message text override it.
 
 ### 4. Optional: put the gateway in front of Penny
 
-Connected straight to a Manyfold channel, Penny gets every message in the group, all in one
-long session. The gateway in `src/worker/gateway/` puts this Worker in between:
+Connected straight to a Manyfold Matrix channel, Penny gets every message in the group, all
+in one long session. The gateway in `src/worker/gateway/` puts this Worker in between:
 
 ```
-Narra webhook → POST /api/narra/events → filter → one queue per room (Durable Object)
-             → Penny turn in a fresh context (A2A) → answer posted into the room
+NarraPoller (Durable Object) reads new messages through Narra's agent-runtime chat API
+   → filter → one queue per room (RoomQueue, Durable Object)
+   → Penny turn in a fresh context (A2A) → answer posted into the room through Narra
 ```
 
-- **The filter** drops chatter for free. Penny is called only for mentions, answers to her
-  proposals ("OK #21") and messages where someone says they spent or repaid money.
-- **The webhook answers 202 at once**. Penny's turn runs later from the room's queue.
+- **It reads, rather than waits for a webhook.** Narra only offers webhooks to agents that
+  chose them when first bound, and only for @mentions. The poller reads one room per tick,
+  every 8 s for rooms with recent activity and every minute for quiet ones. That stays within
+  Narra's 30 reads a minute per agent token, which Penny's own history reads share.
+- **The filter** drops chatter for free. Penny is called only for mentions, for answers to her
+  proposals ("OK #21"), and for messages where someone says they spent or repaid money.
 - **One queue per room**: a group's messages are handled in order, while different groups
-  run in parallel. Failed turns are retried, and a message delivered twice is answered once.
+  run in parallel. Failed turns are retried, and the same message is never answered twice.
 - **A fresh context for every message**, so no session grows and no group sees another's.
+- **Encrypted rooms are skipped.** Narra does not let agents into end-to-end encrypted chats,
+  so a bookkeeping group must be a normal (unencrypted) chat.
 
-To switch it on: connect Penny in this Worker's web app, then set `PENNY_AGENT_ID` to its
-agent id, and set the `NARRA_WEBHOOK_SECRET` and `NARRA_AGENT_TOKEN` secrets. Point Narra's
-webhook at `https://<worker>/api/narra/events` with `Authorization: Bearer <NARRA_WEBHOOK_SECRET>`.
-The webhook takes Matrix room events (`room_id`, `event_id`, `sender`, `content.body`,
-optional `room_name`, `chat_type` and `sender_name`). Disconnect the Manyfold Matrix channel
-from those rooms afterwards, or Penny answers twice.
+To switch it on:
+
+1. Connect Penny in this Worker's web app.
+2. Set the `PENNY_AGENT_ID` var to her agent id.
+3. Set the `NARRA_AGENT_TOKEN` secret.
+4. Set the `NARRA_GATEWAY` var to `poll`.
+5. Disconnect the Manyfold Matrix channel from those rooms, or Penny answers twice.
+
+The cron trigger starts the poller within five minutes. Penny answers new messages from then
+on; earlier ones stay in the room's history.
 
 ## Local development
 
