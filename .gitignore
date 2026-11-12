@@ -4,3 +4,6 @@ dist/
 .dev.vars
 .DS_Store
 *.log
+
+# Penny agent secrets
+agent/.penny/

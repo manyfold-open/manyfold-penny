@@ -42,7 +42,20 @@ The template is designed to be extended and reshaped; these are the load-bearing
      double-bill (`src/worker/chat.ts`).
 7. **Keep new routes behind the admin gate.** Any route added under `/api/` is protected by
    the `ADMIN_PASSWORD` middleware automatically — do not add exceptions beyond `/api/health`
-   and `/api/state` without a reason as good as theirs.
+   and `/api/state` without a reason as good as theirs. The one exception is `/api/ledger/*`:
+   the Penny agent calls it, not a browser, so it skips the Origin check and the admin password
+   and requires `Authorization: Bearer <PENNY_API_KEY>` instead (`src/worker/ledger/routes.ts`).
+   Without that secret the ledger answers 503, never an open ledger.
+8. **The ledger is append-only and group-scoped.** Every ledger query names its group id.
+   Money changes are proposed, then confirmed; edits and deletions add a version and never
+   overwrite one. Amounts are integer minor units, split only through `ledger/money.ts`.
+
+## Penny, the agent
+
+`agent/` holds what goes into the Manyfold agent's workspace: `PENNY.md` (its rules) and
+`bin/penny.mjs` (the ledger tool). The tool reads `.penny/config.json` (`apiBase`, `apiKey`),
+which is git-ignored and uploaded to the workspace separately. Update the agent with
+`mf files upload agent/PENNY.md PENNY.md --agent-id <id>` and the same for `bin/penny.mjs`.
 
 ## Checks
 
