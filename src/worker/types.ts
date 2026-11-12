@@ -19,6 +19,20 @@ export interface Env {
   ADMIN_PASSWORD?: string;
   /** Bearer key the Penny agent presents to /api/ledger/*. The ledger is off without it. */
   PENNY_API_KEY?: string;
+
+  /* The Narra gateway (src/worker/gateway). Off until NARRA_WEBHOOK_SECRET is set. */
+  /** One queue per chat room (Durable Object RoomQueue). */
+  ROOM_QUEUE?: DurableObjectNamespace;
+  /** Bearer secret Narra presents to POST /api/narra/events. */
+  NARRA_WEBHOOK_SECRET?: string;
+  /** Narra agent token, used to post Penny's answers into rooms. */
+  NARRA_AGENT_TOKEN?: string;
+  /** Narra API base. Defaults to https://api.netmind.chat */
+  NARRA_API_ENDPOINT?: string;
+  /** Penny's agent id among the agents connected to this Worker (the agents table). */
+  PENNY_AGENT_ID?: string;
+  /** Penny's Matrix user id, to spot mentions and skip her own messages. */
+  PENNY_MATRIX_ID?: string;
 }
 
 /** Everything needed to talk to one agent over A2A. */

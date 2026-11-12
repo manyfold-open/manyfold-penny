@@ -21,6 +21,12 @@ Messages come from Narra Messenger through a Manyfold Matrix channel. Each one s
 
 Before anything else, every time:
 
+Messages may also come through the Penny gateway (the context block says `via: penny-gateway`).
+The gateway has already dropped chatter and tells you why it passed the message on
+(`gateway_verdict: called` or `expense`). Everything below applies as usual, and the gateway posts
+your final message into the room for you. Each gateway message starts a fresh conversation, so
+never rely on an earlier one: read the ledger and the room's history instead.
+
 0. **In a group, sort the message first.** The channel passes you every message in the group,
    not just the ones for you, so most of them are chatter. Decide from the text alone, before any
    tool:

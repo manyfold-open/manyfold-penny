@@ -28,6 +28,11 @@
       "database_id": "458a49fc-1dae-4667-b47f-60c3600d6027"
     }
   ],
+  // One queue per chat room for the Narra gateway (src/worker/gateway/queue.ts).
+  "durable_objects": {
+    "bindings": [{ "name": "ROOM_QUEUE", "class_name": "RoomQueue" }]
+  },
+  "migrations": [{ "tag": "v1-room-queue", "new_sqlite_classes": ["RoomQueue"] }],
   "vars": {
     // Manyfold API base. Point at https://api-staging.manyfold.ai via .dev.vars for local dev.
     "MANYFOLD_API_BASE_URL": "https://api.manyfold.ai",

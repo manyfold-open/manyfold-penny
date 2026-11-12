@@ -168,6 +168,30 @@ time: 2026-11-08T19:42:00Z
 `room` selects the ledger, so whatever bridges your chat platform to the agent must set it
 and must not let message text override it.
 
+### 4. Optional: put the gateway in front of Penny
+
+Connected straight to a Manyfold channel, Penny gets every message in the group, all in one
+long session. The gateway in `src/worker/gateway/` puts this Worker in between:
+
+```
+Narra webhook → POST /api/narra/events → filter → one queue per room (Durable Object)
+             → Penny turn in a fresh context (A2A) → answer posted into the room
+```
+
+- **The filter** drops chatter for free. Penny is called only for mentions, answers to her
+  proposals ("OK #21") and messages where someone says they spent or repaid money.
+- **The webhook answers 202 at once**. Penny's turn runs later from the room's queue.
+- **One queue per room**: a group's messages are handled in order, while different groups
+  run in parallel. Failed turns are retried, and a message delivered twice is answered once.
+- **A fresh context for every message**, so no session grows and no group sees another's.
+
+To switch it on: connect Penny in this Worker's web app, then set `PENNY_AGENT_ID` to its
+agent id, and set the `NARRA_WEBHOOK_SECRET` and `NARRA_AGENT_TOKEN` secrets. Point Narra's
+webhook at `https://<worker>/api/narra/events` with `Authorization: Bearer <NARRA_WEBHOOK_SECRET>`.
+The webhook takes Matrix room events (`room_id`, `event_id`, `sender`, `content.body`,
+optional `room_name`, `chat_type` and `sender_name`). Disconnect the Manyfold Matrix channel
+from those rooms afterwards, or Penny answers twice.
+
 ## Local development
 
 ```bash
