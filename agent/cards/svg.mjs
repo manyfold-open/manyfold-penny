@@ -26,20 +26,6 @@ export const C = {
   other: '#8A94A3',
 };
 
-export const CATEGORY_LABEL = {
-  food: '餐飲',
-  drinks: '酒水飲料',
-  groceries: '雜貨',
-  transport: '交通',
-  accommodation: '住宿',
-  tickets: '門票',
-  shopping: '購物',
-  utilities: '水電',
-  rent: '房租',
-  other: '其他',
-  settlement: '還款',
-};
-
 const SYMBOL = { GBP: '£', USD: '$', EUR: '€', JPY: '¥', TWD: 'NT$', HKD: 'HK$', CNY: '¥', KRW: '₩', AUD: 'A$', CAD: 'C$', SGD: 'S$' };
 
 export const esc = (value) =>
@@ -104,9 +90,10 @@ export function line(x1, y1, x2, y2, stroke = C.rule, width = 1) {
 }
 
 /** Wrap card content in an SVG document of the card width. */
-export function svg(height, body, background = C.paper) {
+export function svg(height, body, background = C.paper, font = FONT) {
   const h = Math.ceil(height);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${h}" viewBox="0 0 ${WIDTH} ${h}" font-family="${FONT}">${rect(0, 0, WIDTH, h, background)}${body}</svg>`;
+  // The fallback family covers Latin text and any glyph the chosen subset lacks.
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${h}" viewBox="0 0 ${WIDTH} ${h}" font-family="${font}, ${FONT}">${rect(0, 0, WIDTH, h, background)}${body}</svg>`;
 }
 
 /** Title on the left, a quiet note on the right. Returns [markup, next y]. */

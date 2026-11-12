@@ -1,4 +1,4 @@
-// SVG to PNG with resvg and the bundled Noto Sans TC. Downloads the fonts on first use.
+// SVG to PNG with resvg and Noto Sans TC / SC. Downloads the fonts on first use.
 
 import { existsSync, mkdirSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -9,6 +9,9 @@ const FONT_DIR = join(dirname(fileURLToPath(import.meta.url)), 'fonts');
 const FONTS = {
   'NotoSansTC-Regular.otf': 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/TC/NotoSansTC-Regular.otf',
   'NotoSansTC-Bold.otf': 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/TC/NotoSansTC-Bold.otf',
+  // Simplified Chinese has characters the Traditional subset does not.
+  'NotoSansSC-Regular.otf': 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Regular.otf',
+  'NotoSansSC-Bold.otf': 'https://raw.githubusercontent.com/notofonts/noto-cjk/main/Sans/SubsetOTF/SC/NotoSansSC-Bold.otf',
 };
 
 /** Make sure the fonts are on disk, fetching any that are missing. */

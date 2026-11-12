@@ -8,6 +8,8 @@
 //   node cards/render.mjs daily      <room> [--from ...] [--to ...]
 //   node cards/render.mjs expenses   <room> [--limit 5] [--before <seq>]
 //
+// Every card takes --lang zh-Hant (default), zh-Hans or en.
+//
 // Prints {"file": "...png", "alt": "...", "width": 720, "height": ...}. Send the file to the
 // chat and put `alt` (or a one-line summary) in the text next to it.
 // Exits 1 with {"error": ...} when the ledger or the drawing fails.
@@ -18,6 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { LedgerError, enc, ledgerOrThrow } from '../bin/ledger.mjs';
 import { categoriesCard, dailyCard, expensesCard, peopleCard, posterCard, receiptCard } from './cards.mjs';
 import { toPng } from './png.mjs';
+import { normalizeLang } from './i18n.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +42,7 @@ const fail = (code, message) => {
 };
 
 async function build(kind, room, seq, flags) {
+  const lang = normalizeLang(flags.lang);
   const g = `/groups/${enc(room)}`;
   const { group, members } = await ledgerOrThrow('GET', g);
   const range = new URLSearchParams();
@@ -48,13 +52,13 @@ async function build(kind, room, seq, flags) {
 
   switch (kind) {
     case 'people':
-      return peopleCard({ groupName: group.name, members, balances: await ledgerOrThrow('GET', `${g}/balances`) });
+      return peopleCard({ groupName: group.name, members, balances: await ledgerOrThrow('GET', `${g}/balances`), lang });
     case 'receipt': {
       if (!seq) fail('missing_argument', 'receipt needs an entry number.');
       const { versions } = await ledgerOrThrow('GET', `${g}/entries/${seq}`);
       const entry = versions.find((v) => v.status === 'active') ?? versions.find((v) => v.status === 'pending');
       if (!entry || entry.type === 'settlement' || entry.type === 'void') fail('not_an_expense', `#${seq} is not an expense.`);
-      return receiptCard({ entry, members, minorUnit: group.minorUnit });
+      return receiptCard({ entry, members, minorUnit: group.minorUnit, lang });
     }
     case 'poster':
       return posterCard({
@@ -63,20 +67,21 @@ async function build(kind, room, seq, flags) {
         balances: await ledgerOrThrow('GET', `${g}/balances`),
         members,
         botName: group.botName,
+        lang,
       });
     case 'categories':
-      return categoriesCard({ groupName: group.name, stats: await stats() });
+      return categoriesCard({ groupName: group.name, stats: await stats(), lang });
     case 'daily': {
       const s = await stats();
       if (s.byDay.length === 0) fail('no_data', 'There are no expenses in that range yet.');
-      return dailyCard({ groupName: group.name, stats: s });
+      return dailyCard({ groupName: group.name, stats: s, lang });
     }
     case 'expenses': {
       const query = new URLSearchParams();
       query.set('limit', flags.limit ?? '5');
       if (flags.before) query.set('before', flags.before);
       const page = await ledgerOrThrow('GET', `${g}/expenses?${query}`);
-      return expensesCard({ page, members, currency: group.currency, minorUnit: group.minorUnit });
+      return expensesCard({ page, members, currency: group.currency, minorUnit: group.minorUnit, lang });
     }
     default:
       return fail('unknown_card', 'Card must be people, receipt, poster, categories, daily or expenses.');

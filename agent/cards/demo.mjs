@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Render all six cards from built-in sample data (the London trip from the prototype),
-// without touching the ledger. Writes PNGs to out/demo/. Use it to check the drawing.
+// Render all six cards in every language from built-in sample data (the London trip from
+// the prototype), without touching the ledger. Writes PNGs to out/demo/<lang>/.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { categoriesCard, dailyCard, expensesCard, peopleCard, posterCard, receiptCard } from './cards.mjs';
 import { toPng } from './png.mjs';
+import { LANGS } from './i18n.mjs';
 
 const Z = '@zack:x';
 const M = '@mei:x';
@@ -113,20 +114,33 @@ const page = {
   more: true,
 };
 
-const cards = {
-  people: peopleCard({ groupName, members, balances }),
-  receipt: receiptCard({ entry: receipt, members, minorUnit: 2 }),
-  poster: posterCard({ groupName, stats, balances, members }),
-  categories: categoriesCard({ groupName, stats }),
-  daily: dailyCard({ groupName, stats }),
-  expenses: expensesCard({ page, members, currency: 'GBP', minorUnit: 2 }),
+const SAMPLE_NAMES = {
+  'zh-Hant': { group: '倫敦四日', items: ['炸魚薯條', '漢堡', '蘇格蘭蛋', '例湯', '分享拼盤'], lunch: '午餐 Pub', stay: 'Airbnb 三晚' },
+  'zh-Hans': { group: '伦敦四日', items: ['炸鱼薯条', '汉堡', '苏格兰蛋', '例汤', '分享拼盘'], lunch: '午餐 Pub', stay: 'Airbnb 三晚' },
+  en: { group: 'London weekend', items: ['Fish and chips', 'Burger', 'Scotch egg', 'Soup', 'Sharing platter'], lunch: 'Pub lunch', stay: 'Airbnb, 3 nights' },
 };
 
-const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'out', 'demo');
-mkdirSync(dir, { recursive: true });
-for (const [name, card] of Object.entries(cards)) {
-  const { png, width, height } = await toPng(card.svg);
-  writeFileSync(join(dir, `${name}.png`), png);
-  writeFileSync(join(dir, `${name}.svg`), card.svg);
-  console.log(`${name}.png ${width}x${height}  ${card.alt}`);
+for (const lang of LANGS) {
+  const n = SAMPLE_NAMES[lang];
+  const localReceipt = {
+    ...receipt,
+    description: n.lunch,
+    split: { ...receipt.split, items: receipt.split.items.map((item, i) => ({ ...item, label: n.items[i] })) },
+  };
+  const localStats = { ...stats, largest: { ...stats.largest, description: n.stay } };
+  const cards = {
+    people: peopleCard({ groupName: n.group, members, balances, lang }),
+    receipt: receiptCard({ entry: localReceipt, members, minorUnit: 2, lang }),
+    poster: posterCard({ groupName: n.group, stats: localStats, balances, members, lang }),
+    categories: categoriesCard({ groupName: n.group, stats, lang }),
+    daily: dailyCard({ groupName: n.group, stats, lang }),
+    expenses: expensesCard({ page, members, currency: 'GBP', minorUnit: 2, lang }),
+  };
+  const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'out', 'demo', lang);
+  mkdirSync(dir, { recursive: true });
+  for (const [name, card] of Object.entries(cards)) {
+    const { png, width, height } = await toPng(card.svg);
+    writeFileSync(join(dir, `${name}.png`), png);
+    console.log(`${lang}/${name}.png ${width}x${height}  ${card.alt}`);
+  }
 }

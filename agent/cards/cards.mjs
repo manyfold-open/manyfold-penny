@@ -2,16 +2,17 @@
 // and returns { svg, alt }. No card does any money arithmetic of its own beyond adding up
 // what it shows and working out percentages for a chart.
 
-import { C, CATEGORY_LABEL, PAD, WIDTH, fit, header, initial, line, measure, moneyFormat, rect, svg, t } from './svg.mjs';
+import { C, PAD, WIDTH, fit, header, initial, line, measure, moneyFormat, rect, svg, t } from './svg.mjs';
+import { strings } from './i18n.mjs';
 
-const WEEKDAY = ['日', '一', '二', '三', '四', '五', '六'];
-const md = (day) => `${Number(day.slice(5, 7))}/${Number(day.slice(8, 10))}`;
-const weekday = (day) => WEEKDAY[new Date(`${day}T00:00:00Z`).getUTCDay()];
+const md = (L, day) => L.date(Number(day.slice(5, 7)), Number(day.slice(8, 10)));
+const weekday = (L, day) => L.weekdays[new Date(`${day}T00:00:00Z`).getUTCDay()];
 const nameOf = (names) => (id) => names[id] ?? id;
 
 /* ───────── 1. who owes whom: one tile per person ───────── */
 
-export function peopleCard({ groupName, members, balances }) {
+export function peopleCard({ groupName, members, balances, lang }) {
+  const L = strings(lang);
   const name = nameOf(Object.fromEntries(members.map((m) => [m.id, m.name])));
   const fmt = moneyFormat(balances.currency, balances.minorUnit, [
     ...balances.nets.map((n) => n.amount),
@@ -26,25 +27,44 @@ export function peopleCard({ groupName, members, balances }) {
       const incoming = balances.transfers.filter((x) => x.to === m.id);
       const outgoing = balances.transfers.filter((x) => x.from === m.id);
       if (amount > 0)
-        return { m, amount, kind: 'receive', detail: incoming.map((x) => `${name(x.from)} ${fmt.plain(x.amount)}`).join('、') };
-      if (amount < 0)
-        return { m, amount: -amount, kind: 'pay', detail: `給 ${outgoing.map((x) => `${name(x.to)} ${fmt.plain(x.amount)}`).join('、')}` };
-      return { m, amount: 0, kind: 'even', detail: '沒有要轉的錢' };
+        return { m, amount, kind: 'receive', parts: incoming.map((x) => `${name(x.from)} ${fmt.plain(x.amount)}`) };
+      if (amount < 0) {
+        const parts = outgoing.map((x) => `${name(x.to)} ${fmt.plain(x.amount)}`);
+        return { m, amount: -amount, kind: 'pay', parts: [L.payTo(parts[0]), ...parts.slice(1)] };
+      }
+      return { m, amount: 0, kind: 'even', parts: [L.nothingToSend] };
     })
     .sort((a, b) => ['receive', 'pay', 'even'].indexOf(a.kind) - ['receive', 'pay', 'even'].indexOf(b.kind) || b.amount - a.amount);
 
-  const [head, top] = header('每個人的狀況', groupName);
+  const [head, top] = header(L.peopleTitle, groupName);
   const gap = 8;
   const w = (WIDTH - PAD * 2 - gap) / 2;
-  const h = 108;
+  const lineH = 16;
+  // Wrap each tile's detail ("Mei 175、Ken 35") onto as many lines as it needs; never cut an amount off.
+  for (const tile of tiles) {
+    tile.lines = [];
+    for (const part of tile.parts) {
+      const last = tile.lines.length - 1;
+      const joined = last >= 0 ? `${tile.lines[last]}${L.list}${part}` : part;
+      if (last >= 0 && measure(joined, 12) <= w - 24) tile.lines[last] = joined;
+      else tile.lines.push(last >= 0 ? `${part}` : part);
+    }
+  }
+  const rowHeights = [];
+  tiles.forEach((tile, i) => {
+    const row = Math.floor(i / 2);
+    rowHeights[row] = Math.max(rowHeights[row] ?? 0, 92 + tile.lines.length * lineH);
+  });
+  const rowTop = (row) => top + 4 + rowHeights.slice(0, row).reduce((acc, h) => acc + h + gap, 0);
   let body = head;
   tiles.forEach((tile, i) => {
     const x = PAD + (i % 2) * (w + gap);
-    const y = top + 4 + Math.floor(i / 2) * (h + gap);
+    const y = rowTop(Math.floor(i / 2));
+    const h = rowHeights[Math.floor(i / 2)];
     const style = {
-      receive: { tint: C.receiveTint, ink: C.receive, label: '↓ 要收回' },
-      pay: { tint: C.payTint, ink: C.pay, label: '↑ 要付出' },
-      even: { tint: C.evenTint, ink: C.even, label: '已結清' },
+      receive: { tint: C.receiveTint, ink: C.receive, label: L.receive },
+      pay: { tint: C.payTint, ink: C.pay, label: L.pay },
+      even: { tint: C.evenTint, ink: C.even, label: L.even },
     }[tile.kind];
     body += rect(x, y, w, h, style.tint, 12);
     body += `<circle cx="${x + 26}" cy="${y + 26}" r="14" fill="${C.ink}"/>`;
@@ -52,32 +72,35 @@ export function peopleCard({ groupName, members, balances }) {
     body += t(x + 48, y + 31, fit(tile.m.name, 14, w - 58), { size: 14, weight: 700 });
     body += t(x + 12, y + 58, style.label, { size: 12, weight: 500, fill: style.ink });
     body += t(x + 12, y + 82, tile.kind === 'even' ? '—' : fmt.money(tile.amount), { size: 20, weight: 700, tabular: true });
-    body += t(x + 12, y + 99, fit(tile.detail, 12, w - 24), { size: 12, fill: C.even });
+    tile.lines.forEach((text, k) => {
+      body += t(x + 12, y + 99 + k * lineH, fit(text, 12, w - 24), { size: 12, fill: C.even });
+    });
   });
-  const rows = Math.ceil(tiles.length / 2);
-  const bottom = top + 4 + rows * h + (rows - 1) * gap;
-  const plan = balances.transfers.length === 0 ? '大家都結清了' : `照這樣轉 ${balances.transfers.length} 筆就結清`;
+  const rows = rowHeights.length;
+  const bottom = rowTop(rows - 1) + rowHeights[rows - 1];
+  const plan = balances.transfers.length === 0 ? L.allSettled : L.transfersToSettle(balances.transfers.length);
   body += t(PAD, bottom + 26, plan, { size: 12, fill: C.quiet });
 
   const alt = balances.transfers.length
-    ? `誰欠誰：${balances.transfers.map((x) => `${name(x.from)} 給 ${name(x.to)} ${fmt.money(x.amount)}`).join('，')}`
-    : '大家都結清了';
-  return { svg: svg(bottom + 42, body), alt };
+    ? `${L.altWhoOwes}${L.colon}${balances.transfers.map((x) => L.altOwes(name(x.from), name(x.to), fmt.money(x.amount))).join(L.list)}`
+    : L.allSettled;
+  return { svg: svg(bottom + 42, body, C.paper, L.font), alt };
 }
 
 /* ───────── 2. a receipt: who had what ───────── */
 
-export function receiptCard({ entry, members, minorUnit }) {
+export function receiptCard({ entry, members, minorUnit, lang }) {
+  const L = strings(lang);
   const name = nameOf(Object.fromEntries(members.map((m) => [m.id, m.name])));
   const split = entry.split;
   const shares = Object.fromEntries(entry.shares.map((s) => [s.member, s.amount]));
-  const payer = entry.payers.map((p) => name(p.member)).join('、');
-  const title = `${entry.description || `#${entry.seq}`}：誰吃了什麼`;
+  const payer = entry.payers.map((p) => name(p.member)).join(L.list);
+  const title = L.receiptTitle(entry.description || `#${entry.seq}`);
 
   if (!split || split.method !== 'items') {
     // Not an itemised receipt: show each person's share.
     const fmt = moneyFormat(entry.currency, minorUnit, [entry.amount, ...entry.shares.map((s) => s.amount)]);
-    const [head, top] = header(entry.description || `#${entry.seq}`, `${payer} 付`);
+    const [head, top] = header(entry.description || `#${entry.seq}`, L.paidBy(payer));
     let body = head;
     let y = top + 6;
     for (const s of entry.shares) {
@@ -87,9 +110,9 @@ export function receiptCard({ entry, members, minorUnit }) {
       y += 30;
     }
     body += line(PAD, y, WIDTH - PAD, y, C.ink);
-    body += t(PAD, y + 22, '合計', { size: 14, weight: 700 });
+    body += t(PAD, y + 22, L.total, { size: 14, weight: 700 });
     body += t(WIDTH - PAD, y + 22, fmt.money(entry.amount), { size: 14, weight: 700, anchor: 'end', tabular: true });
-    return { svg: svg(y + 40, body), alt: `${entry.description} ${fmt.money(entry.amount)}，${payer} 付` };
+    return { svg: svg(y + 40, body, C.paper, L.font), alt: `${entry.description} ${fmt.money(entry.amount)}${L.list}${L.paidBy(payer)}` };
   }
 
   const people = split.everyone;
@@ -105,19 +128,19 @@ export function receiptCard({ entry, members, minorUnit }) {
   const labelW = WIDTH - PAD * 2 - amountW - colW * people.length;
   const colX = (i) => PAD + labelW + colW * i + colW / 2;
 
-  const [head, top] = header(title, `${payer} 付`);
+  const [head, top] = header(title, L.paidBy(payer));
   let body = head;
   let y = top + 8;
   people.forEach((p, i) => {
     body += t(colX(i), y, fit(name(p), 12, colW - 2), { size: 12, weight: 700, fill: C.even, anchor: 'middle' });
   });
-  body += t(WIDTH - PAD, y, `金額 ${fmt.symbol.trim()}`, { size: 12, fill: C.even, anchor: 'end' });
+  body += t(WIDTH - PAD, y, L.amountIn(fmt.symbol.trim()), { size: 12, fill: C.even, anchor: 'end' });
   y += 10;
 
   split.items.forEach((item, index) => {
     const who = item.members && item.members.length ? item.members : people;
     body += line(PAD, y, WIDTH - PAD, y);
-    body += t(PAD, y + 19, fit(item.label || `品項 ${index + 1}`, 13, labelW - 8), { size: 13 });
+    body += t(PAD, y + 19, fit(item.label || L.item(index + 1), 13, labelW - 8), { size: 13 });
     people.forEach((p, i) => {
       body += who.includes(p)
         ? `<circle cx="${colX(i)}" cy="${y + 14}" r="6" fill="${C.ink}"/>`
@@ -129,45 +152,46 @@ export function receiptCard({ entry, members, minorUnit }) {
 
   if (split.extra) {
     body += line(PAD, y, WIDTH - PAD, y);
-    body += t(PAD, y + 19, '服務費、稅（按比例）', { size: 12, fill: C.quiet });
+    body += t(PAD, y + 19, fit(L.extra, 12, labelW + colW * people.length - 8), { size: 12, fill: C.quiet });
     body += t(WIDTH - PAD, y + 19, fmt.plain(split.extra), { size: 12, fill: C.quiet, anchor: 'end', tabular: true });
     y += 28;
   }
 
   body += line(PAD, y, WIDTH - PAD, y, C.ink);
-  body += t(PAD, y + 22, '每人', { size: 13, weight: 700 });
+  body += t(PAD, y + 22, L.each, { size: 13, weight: 700 });
   people.forEach((p, i) => {
     body += t(colX(i), y + 22, fmt.plain(shares[p] ?? 0), { size: 11.5, weight: 700, anchor: 'middle', tabular: true });
   });
   body += t(WIDTH - PAD, y + 22, fmt.plain(entry.amount), { size: 13, weight: 700, anchor: 'end', tabular: true });
   y += 34;
-  body += t(PAD, y + 12, '實心圓：有分到這一項', { size: 12, fill: C.quiet });
+  body += t(PAD, y + 12, L.dotLegend, { size: 12, fill: C.quiet });
 
-  const alt = `${entry.description}，共 ${fmt.money(entry.amount)}：${people.map((p) => `${name(p)} ${fmt.money(shares[p] ?? 0)}`).join('、')}`;
-  return { svg: svg(y + 28, body), alt };
+  const alt = L.altReceipt(entry.description, fmt.money(entry.amount), people.map((p) => `${name(p)} ${fmt.money(shares[p] ?? 0)}`).join(L.list));
+  return { svg: svg(y + 28, body, C.paper, L.font), alt };
 }
 
 /* ───────── 3. the trip in review ───────── */
 
-export function posterCard({ groupName, stats, balances, members, botName = 'Penny' }) {
+export function posterCard({ groupName, stats, balances, members, botName = 'Penny', lang }) {
+  const L = strings(lang);
   const name = nameOf(Object.fromEntries(members.map((m) => [m.id, m.name])));
   const fmt = moneyFormat(stats.currency, stats.minorUnit, [stats.total, stats.largest?.amount ?? 0]);
   const days = stats.firstDay
     ? Math.round((Date.parse(stats.lastDay) - Date.parse(stats.firstDay)) / 86_400_000) + 1
     : 0;
-  const range = stats.firstDay ? (stats.firstDay === stats.lastDay ? md(stats.firstDay) : `${md(stats.firstDay)}–${md(stats.lastDay)}`) : '';
+  const range = stats.firstDay ? (stats.firstDay === stats.lastDay ? md(L, stats.firstDay) : `${md(L, stats.firstDay)}–${md(L, stats.lastDay)}`) : '';
 
   let body = '';
   body += t(20, 34, fit([groupName, range].filter(Boolean).join(' · '), 13, WIDTH - 40), { size: 13, weight: 500, fill: C.navyText });
   body += t(20, 80, fmt.money(stats.total), { size: 40, weight: 700, fill: '#FFFFFF', tabular: true });
-  body += t(20, 104, `${stats.members} 個人 · ${days} 天 · ${stats.count} 筆`, { size: 13, fill: C.navyText });
+  body += t(20, 104, L.posterCounts(stats.members, days, stats.count), { size: 13, fill: C.navyText });
 
   const topPayer = stats.payers[0];
   const topCategory = [...stats.byCategory].sort((a, b) => b.count - a.count || b.amount - a.amount)[0];
   const panels = [
-    topPayer && ['最常掏錢的人', name(topPayer.member), `付了 ${topPayer.count} 筆`],
-    stats.largest && ['最大的一筆', stats.largest.description || `#${stats.largest.seq}`, fmt.money(stats.largest.amount)],
-    topCategory && ['最常記的分類', CATEGORY_LABEL[topCategory.category] ?? topCategory.category, `${topCategory.count} 筆`],
+    topPayer && [L.topPayer, name(topPayer.member), L.paidTimes(topPayer.count)],
+    stats.largest && [L.largest, stats.largest.description || `#${stats.largest.seq}`, fmt.money(stats.largest.amount)],
+    topCategory && [L.topCategory, L.categories[topCategory.category] ?? topCategory.category, L.times(topCategory.count)],
   ].filter(Boolean);
 
   let y = 122;
@@ -179,24 +203,25 @@ export function posterCard({ groupName, stats, balances, members, botName = 'Pen
     y += 66;
   }
   const open = balances.transfers.length;
-  body += t(20, y + 18, open ? `還有 ${open} 筆轉帳沒結清，@${botName} 誰欠誰 看方案` : '大家都結清了', { size: 12, fill: C.navyText });
+  body += t(20, y + 18, fit(open ? L.openTransfers(open, botName) : L.allSettled, 12, WIDTH - 40), { size: 12, fill: C.navyText });
 
-  const alt = `${groupName}：總共 ${fmt.money(stats.total)}，${stats.count} 筆${open ? `，還有 ${open} 筆轉帳沒結清` : ''}`;
-  return { svg: svg(y + 40, body, C.navy), alt };
+  const alt = L.altPoster(groupName, fmt.money(stats.total), stats.count, open);
+  return { svg: svg(y + 40, body, C.navy, L.font), alt };
 }
 
 /* ───────── 4. where the money went ───────── */
 
-export function categoriesCard({ groupName, stats }) {
+export function categoriesCard({ groupName, stats, lang }) {
+  const L = strings(lang);
   const positive = stats.byCategory.filter((c) => c.amount > 0);
   const top = positive.slice(0, 4);
   const rest = positive.slice(4).reduce((acc, c) => acc + c.amount, 0);
-  const slices = top.map((c, i) => ({ label: CATEGORY_LABEL[c.category] ?? c.category, amount: c.amount, color: C.series[i] }));
-  if (rest > 0) slices.push({ label: '其他', amount: rest, color: C.other });
+  const slices = top.map((c, i) => ({ label: L.categories[c.category] ?? c.category, amount: c.amount, color: C.series[i] }));
+  if (rest > 0) slices.push({ label: L.others, amount: rest, color: C.other });
   const sum = slices.reduce((acc, s) => acc + s.amount, 0);
   const fmt = moneyFormat(stats.currency, stats.minorUnit, [stats.total, ...slices.map((s) => s.amount)]);
 
-  const [head, top0] = header('錢花在哪', `${groupName} · ${stats.count} 筆`);
+  const [head, top0] = header(L.categoriesTitle, `${groupName} · ${L.times(stats.count)}`);
   let body = head;
   const cx = PAD + 75;
   const cy = top0 + 86;
@@ -211,7 +236,7 @@ export function categoriesCard({ groupName, stats }) {
     offset += length;
   }
   body += '</g>';
-  body += t(cx, cy - 3, '總共', { size: 12, fill: C.quiet, anchor: 'middle' });
+  body += t(cx, cy - 3, L.sum, { size: 12, fill: C.quiet, anchor: 'middle' });
   body += t(cx, cy + 16, fit(fmt.money(stats.total), 15, 92), { size: 15, weight: 700, anchor: 'middle', tabular: true });
 
   const lx = PAD + 168;
@@ -219,26 +244,27 @@ export function categoriesCard({ groupName, stats }) {
   for (const s of slices) {
     const pct = `${Math.round((s.amount / sum) * 100)}%`;
     body += rect(lx, ly - 9, 10, 10, s.color, 3);
-    body += t(lx + 16, ly, fit(s.label, 13, 48), { size: 13 });
+    body += t(lx + 16, ly, fit(s.label, 13, 64), { size: 13 });
     body += t(WIDTH - PAD - 40, ly, fmt.plain(s.amount), { size: 13, anchor: 'end', tabular: true });
     body += t(WIDTH - PAD, ly, pct, { size: 12, fill: C.quiet, anchor: 'end', tabular: true });
     ly += 26;
   }
   const bottom = cy + r + 34;
-  body += t(PAD, bottom, `單位 ${fmt.symbol.trim()}`, { size: 12, fill: C.quiet });
-  const alt = `錢花在哪：${slices.map((s) => `${s.label} ${fmt.money(s.amount)}`).join('、')}`;
-  return { svg: svg(bottom + 16, body), alt };
+  body += t(PAD, bottom, L.unit(fmt.symbol.trim()), { size: 12, fill: C.quiet });
+  const alt = `${L.categoriesTitle}${L.colon}${slices.map((s) => `${s.label} ${fmt.money(s.amount)}`).join(L.list)}`;
+  return { svg: svg(bottom + 16, body, C.paper, L.font), alt };
 }
 
 /* ───────── 5. spending by day ───────── */
 
-export function dailyCard({ groupName, stats }) {
+export function dailyCard({ groupName, stats, lang }) {
+  const L = strings(lang);
   let days = stats.byDay;
   const trimmed = days.length > 14;
   if (trimmed) days = days.slice(-14);
   const fmt = moneyFormat(stats.currency, stats.minorUnit, days.map((d) => d.amount));
   const max = Math.max(...days.map((d) => d.amount), 1);
-  const [head, top] = header('每天花多少', `${groupName} · 單位 ${fmt.symbol.trim()}`);
+  const [head, top] = header(L.dailyTitle, `${groupName} · ${L.unit(fmt.symbol.trim())}`);
   let body = head;
 
   const chartTop = top + 24;
@@ -254,48 +280,50 @@ export function dailyCard({ groupName, stats }) {
     if (!small || d.amount === max) {
       body += t(x + barW / 2, base - h - 6, fmt.plain(d.amount), { size: small ? 11 : 12.5, weight: d.amount === max ? 700 : 500, anchor: 'middle', tabular: true });
     }
-    body += t(x + barW / 2, base + 16, md(d.day), { size: 11, fill: C.quiet, anchor: 'middle' });
-    if (!small) body += t(x + barW / 2, base + 31, weekday(d.day), { size: 11, fill: C.quiet, anchor: 'middle' });
+    body += t(x + barW / 2, base + 16, md(L, d.day), { size: 11, fill: C.quiet, anchor: 'middle' });
+    if (!small) body += t(x + barW / 2, base + 31, weekday(L, d.day), { size: 11, fill: C.quiet, anchor: 'middle' });
   });
   body += line(PAD, base, WIDTH - PAD, base, C.ruleStrong);
 
   const peak = days.find((d) => d.amount === max);
-  const note = `${md(peak.day)} 最高，${fmt.money(peak.amount)}${trimmed ? '（只顯示最近 14 天）' : ''}`;
+  const note = `${L.peakDay(md(L, peak.day), fmt.money(peak.amount))}${trimmed ? L.lastDaysOnly(14) : ''}`;
   body += t(PAD, base + (small ? 40 : 56), note, { size: 12, fill: C.quiet });
-  const alt = `每天花多少：${days.map((d) => `${md(d.day)} ${fmt.money(d.amount)}`).join('、')}`;
-  return { svg: svg(base + (small ? 56 : 72), body), alt };
+  const alt = `${L.dailyTitle}${L.colon}${days.map((d) => `${md(L, d.day)} ${fmt.money(d.amount)}`).join(L.list)}`;
+  return { svg: svg(base + (small ? 56 : 72), body, C.paper, L.font), alt };
 }
 
 /* ───────── 6. recent expenses ───────── */
 
-export function expensesCard({ page, members, currency, minorUnit }) {
+export function expensesCard({ page, members, currency, minorUnit, lang }) {
+  const L = strings(lang);
   const name = nameOf(Object.fromEntries(members.map((m) => [m.id, m.name])));
   const amounts = page.entries.map((e) => e.amount);
   const fmt = moneyFormat(currency, minorUnit, [...amounts, page.total]);
   const seqs = page.entries.map((e) => e.seq);
-  const note = seqs.length ? `#${Math.min(...seqs)}–#${Math.max(...seqs)}${page.more ? ' · 還有更早的' : ''}` : '';
-  const [head, top] = header('支出明細', note);
+  const note = seqs.length ? `#${Math.min(...seqs)}–#${Math.max(...seqs)}${page.more ? ` · ${L.earlier}` : ''}` : '';
+  const [head, top] = header(L.expensesTitle, note);
   let body = head;
   let y = top + 2;
   if (page.entries.length === 0) {
-    body += t(PAD, y + 22, '還沒有記任何支出', { size: 13, fill: C.quiet });
-    return { svg: svg(y + 44, body), alt: '還沒有記任何支出' };
+    body += t(PAD, y + 22, L.noExpenses, { size: 13, fill: C.quiet });
+    return { svg: svg(y + 44, body, C.paper, L.font), alt: L.noExpenses };
   }
   for (const e of page.entries) {
     const refund = e.type === 'refund';
     const sign = refund ? -e.amount : e.amount;
     body += line(PAD, y, WIDTH - PAD, y);
-    const title = `#${e.seq} ${e.description || CATEGORY_LABEL[e.category] || ''}`;
-    const tags = [e.version > 1 ? '已修改' : '', refund ? '退款' : ''].filter(Boolean).join(' · ');
+    const title = `#${e.seq} ${e.description || L.categories[e.category] || ''}`;
+    const tags = [e.version > 1 ? L.edited : '', refund ? L.refund : ''].filter(Boolean).join(' · ');
     body += t(PAD, y + 20, fit(title, 13, 220 - (tags ? measure(tags, 12) + 8 : 0)), { size: 13, weight: 500 });
     if (tags) body += t(PAD + Math.min(measure(title, 13), 220 - measure(tags, 12) - 8) + 8, y + 20, tags, { size: 12, fill: C.quiet });
-    body += t(PAD, y + 38, `${md(e.spentOn)} · ${e.payers.map((p) => name(p.member)).join('、')} ${refund ? '收' : '付'}`, { size: 12, fill: C.quiet });
+    const who = e.payers.map((p) => name(p.member)).join(L.list);
+    body += t(PAD, y + 38, fit(`${md(L, e.spentOn)} · ${refund ? L.receivedBy(who) : L.paidBy(who)}`, 12, 230), { size: 12, fill: C.quiet });
     body += t(WIDTH - PAD, y + 29, fmt.money(sign), { size: 14, anchor: 'end', tabular: true });
     y += 48;
   }
   body += line(PAD, y, WIDTH - PAD, y, C.ruleStrong);
-  body += t(PAD, y + 24, `這 ${page.entries.length} 筆合計`, { size: 14, weight: 700 });
+  body += t(PAD, y + 24, L.pageTotal(page.entries.length), { size: 14, weight: 700 });
   body += t(WIDTH - PAD, y + 24, fmt.money(page.total), { size: 14, weight: 700, anchor: 'end', tabular: true });
-  const alt = `支出明細：${page.entries.map((e) => `#${e.seq} ${e.description} ${fmt.money(e.amount)}`).join('、')}`;
-  return { svg: svg(y + 42, body), alt };
+  const alt = `${L.expensesTitle}${L.colon}${page.entries.map((e) => `#${e.seq} ${e.description} ${fmt.money(e.amount)}`).join(L.list)}`;
+  return { svg: svg(y + 42, body, C.paper, L.font), alt };
 }
