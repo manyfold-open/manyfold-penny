@@ -1,11 +1,7 @@
-# Checks only — this workflow never deploys and stores no Cloudflare credentials.
-# Deployment happens on Cloudflare's side: Workers Builds watches the repo and runs
-# `npm run build` + `npx wrangler deploy` on every push to main.
+# Checks pull requests. Pushes to main are checked and deployed by deploy.yml.
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
 
 jobs:

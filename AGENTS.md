@@ -5,9 +5,10 @@ The template is designed to be extended and reshaped; these are the load-bearing
 
 ## How deployment works
 
-- **Workers Builds is the deploy path.** Every push to `main` runs `npm run build` and then
-  `npx wrangler deploy` on Cloudflare's side. CI (`.github/workflows/ci.yml`) only checks; it
-  never deploys and holds no credentials.
+- **GitHub Actions is the deploy path.** Every push to `main` runs `.github/workflows/deploy.yml`:
+  `npm run check`, `npm test`, then `npx wrangler deploy` with the repo's `CLOUDFLARE_API_TOKEN`
+  secret, then a wait on `GET /api/health`. Pull requests only run checks
+  (`.github/workflows/ci.yml`), which hold no credentials.
 - The build step is load-bearing: `wrangler deploy` deploys the output that
   `vite build` writes to `dist/` (via the Cloudflare Vite plugin's deploy-config redirect).
   Never deploy without building first, and never remove the `build` script.
@@ -20,7 +21,7 @@ The template is designed to be extended and reshaped; these are the load-bearing
    the app. Never edit `database_id` — the Deploy button wrote the real one and changing it
    orphans the user's data.
 2. **Keep `GET /api/health` returning 200 JSON.** It is the deploy-verification contract for
-   smoke tests and for Workers Builds sanity checks.
+   smoke tests and for the deploy workflow's final check.
 3. **Evolve the database only through `SCHEMA` in `src/worker/db.ts`**, with
    `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`. Keep semicolons out of
    statement bodies (the splitter treats every `;` as a boundary). There is no migration
