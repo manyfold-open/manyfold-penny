@@ -8,6 +8,7 @@
     "demo": "node cards/demo.mjs"
   },
   "dependencies": {
+    "@narra-im/narra-cli": "1.2.1",
     "@resvg/resvg-js": "2.6.2"
   }
 }
