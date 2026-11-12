@@ -1,0 +1,173 @@
+/**
+ * Reads new messages from Narra and hands the ones worth a Penny turn to their room's queue.
+ *
+ * Narra only offers webhooks to agents that chose them when they were first bound, and
+ * then only for @mentions, so the gateway reads instead: one Durable Object (NarraPoller)
+ * wakes every few seconds and reads one room's new messages through the agent-runtime chat
+ * API. Rooms with recent activity are read every few seconds, quiet ones once a minute.
+ *
+ * Narra allows 30 message reads a minute per agent token, and Penny's own history reads
+ * use the same allowance, so the poller makes at most one read per tick and ticks no
+ * faster than TICK_MS (15 a minute), leaving the rest for Penny.
+ *
+ * The logic is `tick`, written against small interfaces so it runs in tests. The Durable
+ * Object only wires it to storage, Narra and the room queues.
+ */
+
+import type { Env } from '../types';
+import { classify, type Verdict } from './filter';
+import { parseInbound, type InboundMessage } from './inbound';
+import { narraApi, type NarraApi, type NarraRoom } from './narra-api';
+import { NarraError } from './reply';
+import type { Store } from './queue';
+
+export const TICK_MS = 4_000;
+export const ACTIVE_EVERY_MS = 8_000;
+export const IDLE_EVERY_MS = 60_000;
+const ACTIVE_FOR_MS = 15 * 60_000;
+const ROOMS_EVERY_MS = 5 * 60_000;
+const BACKOFF_MS = 30_000;
+
+interface RoomsState {
+  refreshedAt: number;
+  agentId: string;
+  rooms: NarraRoom[];
+}
+
+interface RoomState {
+  cursor: string | null;
+  nextPollAt: number;
+  lastActivity: number;
+}
+
+export interface Sink {
+  /** Names Penny answers to in this room, besides "Penny". */
+  botNames(roomId: string): Promise<string[]>;
+  deliver(message: InboundMessage, verdict: Verdict): Promise<void>;
+  log(line: string): void;
+}
+
+const roomKey = (id: string) => `room:${id}`;
+
+/** One step. Returns how long to wait before the next one. */
+export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.now()): Promise<number> {
+  let state = await store.get<RoomsState>('rooms');
+  if (!state || now - state.refreshedAt > ROOMS_EVERY_MS) {
+    try {
+      const { agentId, rooms } = await api.rooms();
+      state = { refreshedAt: now, agentId, rooms };
+      await store.put('rooms', state);
+    } catch (error) {
+      sink.log(`room list failed: ${(error as Error).message}`);
+      if (!state) return BACKOFF_MS;
+    }
+  }
+
+  // The room that is most overdue. New rooms start due now.
+  let due: { room: NarraRoom; s: RoomState } | null = null;
+  let soonest = Infinity;
+  for (const room of state.rooms) {
+    const s = (await store.get<RoomState>(roomKey(room.roomId))) ?? { cursor: null, nextPollAt: 0, lastActivity: 0 };
+    if (s.nextPollAt <= now && (!due || s.nextPollAt < due.s.nextPollAt)) due = { room, s };
+    soonest = Math.min(soonest, s.nextPollAt);
+  }
+  if (!due) return Math.max(TICK_MS, Math.min(soonest - now, IDLE_EVERY_MS));
+
+  const { room, s } = due;
+  try {
+    if (!s.cursor) {
+      // First sight of this room: start from now. Earlier messages stay in the history.
+      s.cursor = await api.head(room.roomId);
+      s.nextPollAt = now + ACTIVE_EVERY_MS;
+    } else {
+      const { events, next } = await api.after(room.roomId, s.cursor);
+      const names = await sink.botNames(room.roomId);
+      for (const event of events) {
+        if (event.sender === state.agentId) continue;
+        let message: InboundMessage | null = null;
+        try {
+          message = parseInbound({
+            // The chat API leaves room_id off each event; it is the room we asked about.
+            event: { ...event, room_id: room.roomId },
+            room_name: room.title,
+            chat_type: room.type,
+            sender_name: room.names[event.sender] ?? '',
+          });
+        } catch {
+          continue;
+        }
+        if (!message) continue;
+        s.lastActivity = now;
+        const verdict = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
+        if (verdict !== 'skip') await sink.deliver(message, verdict);
+      }
+      if (next) s.cursor = next;
+      s.nextPollAt = now + (now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS);
+    }
+  } catch (error) {
+    sink.log(`reading ${room.roomId} failed: ${(error as Error).message}`);
+    s.nextPollAt = now + (error instanceof NarraError && !error.retryable ? IDLE_EVERY_MS * 5 : BACKOFF_MS);
+  }
+  await store.put(roomKey(room.roomId), s);
+  return TICK_MS;
+}
+
+export function gatewayEnabled(env: Env): boolean {
+  return (
+    (env.NARRA_GATEWAY ?? '').trim() === 'poll' &&
+    Boolean((env.NARRA_AGENT_TOKEN ?? '').trim()) &&
+    Boolean((env.PENNY_AGENT_ID ?? '').trim()) &&
+    Boolean(env.NARRA_POLLER && env.ROOM_QUEUE)
+  );
+}
+
+/** The single poller. Addressed as env.NARRA_POLLER.idFromName('narra'). */
+export class NarraPoller {
+  private readonly state: DurableObjectState;
+  private readonly env: Env;
+
+  constructor(state: DurableObjectState, env: Env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  private store(): Store {
+    const s = this.state.storage;
+    return {
+      get: (key) => s.get(key),
+      put: (key, value) => s.put(key, value),
+      delete: (key) => s.delete(key),
+      list: (options) => s.list(options),
+    };
+  }
+
+  /** Called by the cron trigger: make sure the loop is running (or stopped, if switched off). */
+  async fetch(): Promise<Response> {
+    if (!gatewayEnabled(this.env)) {
+      await this.state.storage.deleteAlarm();
+      return Response.json({ running: false });
+    }
+    if ((await this.state.storage.getAlarm()) === null) await this.state.storage.setAlarm(Date.now());
+    return Response.json({ running: true });
+  }
+
+  async alarm(): Promise<void> {
+    if (!gatewayEnabled(this.env)) return;
+    const env = this.env;
+    const delay = await tick(this.store(), narraApi(env), {
+      async botNames(roomId) {
+        const row = await env.DB.prepare('SELECT bot_name FROM ledger_groups WHERE id = ?').bind(roomId).first<{ bot_name: string }>();
+        return row?.bot_name ? [row.bot_name] : [];
+      },
+      async deliver(message, verdict) {
+        const queue = env.ROOM_QUEUE!.get(env.ROOM_QUEUE!.idFromName(message.roomId));
+        await queue.fetch('https://room-queue/enqueue', {
+          method: 'POST',
+          body: JSON.stringify({ message, verdict, enqueuedAt: Date.now() }),
+        });
+      },
+      log: (line) => console.log(`[poller] ${line}`),
+    });
+    await this.state.storage.setAlarm(Date.now() + delay);
+  }
+}

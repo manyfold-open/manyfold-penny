@@ -19,6 +19,20 @@ export interface Env {
   ADMIN_PASSWORD?: string;
   /** Bearer key the Penny agent presents to /api/ledger/*. The ledger is off without it. */
   PENNY_API_KEY?: string;
+
+  /* The Narra gateway (src/worker/gateway). Off unless NARRA_GATEWAY is "poll". */
+  /** "poll" switches the gateway on. Anything else (or unset) leaves it off. */
+  NARRA_GATEWAY?: string;
+  /** The single poller that reads new messages from Narra (Durable Object NarraPoller). */
+  NARRA_POLLER?: DurableObjectNamespace;
+  /** One queue per chat room (Durable Object RoomQueue). */
+  ROOM_QUEUE?: DurableObjectNamespace;
+  /** Narra agent token: reads rooms and messages, and posts Penny's answers. */
+  NARRA_AGENT_TOKEN?: string;
+  /** Narra API base. Defaults to https://api.netmind.chat */
+  NARRA_API_ENDPOINT?: string;
+  /** Penny's agent id among the agents connected to this Worker (the agents table). */
+  PENNY_AGENT_ID?: string;
 }
 
 /** Everything needed to talk to one agent over A2A. */

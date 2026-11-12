@@ -24,3 +24,14 @@
 # Generate a long random value and give the same value to the agent:
 #   npx wrangler secret put PENNY_API_KEY
 # PENNY_API_KEY=
+
+# The Narra gateway (src/worker/gateway): reads new Narra messages, filters them, and
+# runs Penny one message at a time per room. Off unless NARRA_GATEWAY=poll.
+# Disconnect the Manyfold Matrix channel from those rooms first, or Penny answers twice.
+# NARRA_GATEWAY=poll
+# The Narra agent token Penny uses (reads rooms and messages, posts her answers):
+#   npx wrangler secret put NARRA_AGENT_TOKEN
+# NARRA_AGENT_TOKEN=
+# Penny's agent id among the agents connected in this Worker's web app:
+# PENNY_AGENT_ID=
+# Optional: NARRA_API_ENDPOINT (default https://api.netmind.chat)
