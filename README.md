@@ -1,164 +1,222 @@
-# Cloudflare Worker Starter for Manyfold Agents
+# Penny
 
 English · [中文](README_CN.md)
 
-A Cloudflare Workers app template pre-wired with [Manyfold](https://manyfold.ai) AI-agent
-connectivity. Deploy it in one click, connect your Manyfold agents from the page, verify the
-wiring with a streaming chat — then build whatever you actually wanted to build on top of a
-stack that already works.
-
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/manyfold-open/cloudflare-worker-starter)
+Penny is a corgi that keeps a group chat's shared expenses. Friends tell her what they spent
+in plain language; she records it, says who owes whom, and helps the group settle up. She is
+a [Manyfold](https://manyfold.ai) agent backed by a ledger on Cloudflare Workers and D1.
 
 ```
-┌──────────────┐    ┌───────────────┐    ┌────────────────────┐    ┌──────────────────┐
-│ 1. Deploy    │ →  │ 2. Open your  │ →  │ 3. Connect an      │ →  │ 4. Chat to       │
-│  (button or  │    │    Worker URL │    │    agent (approve  │    │    verify, then  │
-│  fork+Builds)│    │               │    │    on Manyfold)    │    │    build your app│
-└──────────────┘    └───────────────┘    └────────────────────┘    └──────────────────┘
+Zack   @Penny 晚餐 Dishoom 120 我付，四個人分
+Penny  晚餐 Dishoom £120，Zack 付
+       均分 4 人，每人 £30
+       回 @Penny OK 入帳，或直接說要改什麼
+Mei    @Penny OK
+Penny  已入帳 #21 晚餐 Dishoom £120
+Ken    @Penny 誰欠誰
+Penny  Mei → Zack £175
+       Ken → Zack £35
 ```
 
-## What you get
+Penny replies in the language she is spoken to: Traditional Chinese, Simplified Chinese or
+English.
 
-- **Connect an agent** — a device-code handshake against Manyfold: a popup opens Manyfold's
-  consent page, you compare the confirmation code, pick which agents to share, done. Bearer
-  tokens land AES-GCM-encrypted in your D1 database and never reach the browser.
-- **Chat** — a streaming chat (A2A `message/stream` over SSE) with each connected agent.
-  Conversations persist in D1 and keep the agent-side `contextId`, so multi-turn context works
-  across reloads.
-- **Settings** — see every connected agent, re-run the (free, non-billing) connectivity probe,
-  disconnect, or connect more. Re-approving an agent rotates its token in place.
-- **A clean base to iterate on** — Vite + React 19 + Hono on one Worker, D1 with a
-  zero-migration schema, ~no magic. Add a route, a table, a component, ship.
+## What Penny does
 
-## Deploying
+- **Records expenses from a sentence.** Equal splits, exact amounts, percentages, shares,
+  receipts split item by item, per-person adjustments ("Ken skips the wine, take 8 off"),
+  advances, refunds, and guests who are not in the chat.
+- **Asks before anything counts.** Every expense, edit, deletion and repayment is a proposal
+  until someone in the group says OK. A repayment can only be confirmed by the person who
+  received the money.
+- **Works out who owes whom.** Net balances and a settle-up plan with as few transfers as
+  possible. Partial repayments are fine.
+- **Answers questions about the ledger.** Recent entries, one person's paid-versus-share
+  summary, and totals by category and by day.
+- **Draws cards.** Anything longer than three lines goes out as a PNG drawn from live ledger
+  data: who owes whom, an itemised receipt, a trip poster, spending by category, spending by
+  day, and recent expenses.
+- **Learns a group's habits.** "Ken never pays for drinks" is remembered per group (up to 20
+  memories) and applied to later proposals, and Penny says so when it is.
+- **Keeps groups apart.** One ledger per chat room. In a private chat a person can ask for
+  their own position across all their groups; nobody else can.
 
-### Path A — Deploy to Cloudflare button (recommended)
+Penny never does money arithmetic herself. Every amount, split and balance comes from the
+ledger, which works in integer minor units (pence, cents, yen) and never uses floating point.
 
-> [!IMPORTANT]
-> **Before clicking "Deploy" in the Cloudflare form, expand the "Advanced settings" section once.**
-> As of August 2026 a Cloudflare dashboard bug leaves hidden form fields (build API token,
-> non-production deploy command) uninitialized while that section is collapsed — the flow then
-> stalls silently after creating the repository, with no error shown. Expanding the section
-> auto-fills them and the deploy completes normally. This is a dashboard-side issue, not
-> specific to this template.
+## How it is put together
 
-Click the button above. Cloudflare will:
+```
+Group chat
+   │  each message wrapped with room, speaker, members and time
+   ▼
+Penny agent on Manyfold          agent/PENNY.md       her rules
+   │                             agent/bin/penny.mjs  the ledger tool she runs
+   │                             agent/cards/         the card renderer (SVG → PNG)
+   │  HTTPS, Authorization: Bearer <PENNY_API_KEY>
+   ▼
+Cloudflare Worker (Hono)         src/worker/ledger/   /api/ledger/*
+   ▼
+D1                               groups, members, expenses, payers, shares,
+                                 settlements, memory, payment info
+```
 
-1. create a copy of this repository in your GitHub/GitLab account,
-2. provision the D1 database declared in `wrangler.jsonc` and write the real `database_id`
-   into your copy,
-3. wire the repo to **Workers Builds** — every push to `main` builds (`npm run build`) and
-   deploys (`npx wrangler deploy`) automatically.
+The Worker also serves a small web app (React) for connecting Manyfold agents and chatting
+with them from a browser. It comes from the
+[Cloudflare Worker Starter for Manyfold Agents](https://github.com/manyfold-open/cloudflare-worker-starter)
+this repository was built on, and is useful for checking that the agent answers.
 
-No secrets are required. Open the Worker URL and you are at step 2 of the diagram.
+| Path | Purpose |
+| --- | --- |
+| `agent/PENNY.md` | The agent's instructions: how to read a message, record money, settle up, reply |
+| `agent/bin/penny.mjs` | Command-line ledger tool the agent runs (`node bin/penny.mjs help`) |
+| `agent/bin/ledger.mjs` | The HTTP client shared by the tool and the card renderer |
+| `agent/cards/` | Six cards in three languages, drawn as SVG and rendered to PNG with resvg |
+| `src/worker/ledger/routes.ts` | The ledger API and its bearer-key check |
+| `src/worker/ledger/store.ts` | Proposals, confirmations, versions, balances, stats |
+| `src/worker/ledger/money.ts` | Split and settle-up arithmetic: pure functions, integers only |
+| `src/worker/ledger/schema.ts` | The ledger tables |
+| `src/worker/` (the rest) | The starter's Manyfold connect flow, chat and credential encryption |
+| `src/app/` | The starter's web app |
+| `tests/` | Unit tests (vitest), including the ledger and the money arithmetic |
 
-### Path B — fork / use as template, connect Workers Builds yourself
+### The ledger
 
-1. Fork this repo (or "Use this template") on GitHub.
-2. Create the database: `npx wrangler d1 create manyfold-app-db`, then paste the returned
-   `database_id` into `wrangler.jsonc`.
-3. In the Cloudflare dashboard: **Workers & Pages → Create → Connect to Git**, pick your fork,
-   set build command `npm run build` and deploy command `npx wrangler deploy`.
-4. Push to `main` — Workers Builds deploys it.
+- **Append-only.** An edit or a deletion adds a new version of the entry; it replaces the
+  old one only once someone confirms it. `entry <room> <seq>` shows every version.
+- **Proposed, then confirmed.** Entries start as `pending`. Nothing pending affects a
+  balance.
+- **Group-scoped.** Every query names its group id, which is the chat platform's room id.
+- **Off by default.** `/api/ledger/*` answers 503 until the `PENNY_API_KEY` secret is set, so
+  a fresh deploy never exposes an open ledger.
 
-### After deploying (both paths)
+The full route list is at the top of
+[`src/worker/ledger/routes.ts`](src/worker/ledger/routes.ts).
 
-Recommended once your URL is public — without a password anyone who finds the URL can chat
-with (and bill) your agents:
+## Running your own Penny
+
+### 1. Deploy the ledger
+
+Every push to `main` is checked and deployed by
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml). In a fork:
+
+1. Create the database with `npx wrangler d1 create manyfold-penny-db` and put the returned
+   `database_id` in `wrangler.jsonc`.
+2. Add the `CLOUDFLARE_API_TOKEN` secret and the `CLOUDFLARE_ACCOUNT_ID` variable to the
+   GitHub repository. Set the `PRODUCTION_URL` variable to your Worker's URL so the
+   post-deploy health check looks in the right place.
+3. Set the ledger key. Use a long random value; the agent needs the same one.
+
+   ```bash
+   npx wrangler secret put PENNY_API_KEY
+   ```
+
+4. Recommended: lock the web app, and keep the encryption key out of the database (see
+   [Security notes](#security-notes)).
+
+   ```bash
+   npx wrangler secret put ADMIN_PASSWORD
+   ```
+
+   ```bash
+   npx wrangler secret put CONFIG_ENCRYPTION_KEY
+   ```
+
+The schema is applied at runtime, so there is no migration step.
+
+### 2. Set up the agent
+
+The contents of `agent/` go into a Manyfold agent's workspace, with `PENNY.md` as its
+instructions. The workspace also needs a `.penny/config.json`, which is git-ignored and
+uploaded separately:
+
+```json
+{ "apiBase": "https://<your-worker>.workers.dev", "apiKey": "<PENNY_API_KEY>" }
+```
+
+`PENNY_API_BASE` and `PENNY_API_KEY` in the environment work too. In the workspace, install
+the card renderer's one dependency and fetch its fonts (Noto Sans TC and SC) once:
 
 ```bash
-npx wrangler secret put ADMIN_PASSWORD
+npm install && npm run setup
 ```
 
-Optional, keeps the credential-encryption key out of the database (see
-[Security notes](#security-notes)):
+After changing the rules or the tool, upload them again with the Manyfold CLI:
 
 ```bash
-npx wrangler secret put CONFIG_ENCRYPTION_KEY
+mf files upload agent/PENNY.md PENNY.md --agent-id <id>
 ```
+
+### 3. Send her messages
+
+Penny expects every message wrapped in a header that says which room it came from, who is
+speaking and who is in the chat:
+
+```
+<penny-message>
+room: !london:example
+room_name: 倫敦四日
+chat: group
+from: @zack:example (Zack)
+members: @zack:example (Zack); @mei:example (Mei); @ken:example (Ken); @ray:example (Ray)
+time: 2026-11-08T19:42:00Z
+---
+@Penny 晚餐 Dishoom 120 我付，四個人分
+</penny-message>
+```
+
+`room` selects the ledger, so whatever bridges your chat platform to the agent must set it
+and must not let message text override it.
 
 ## Local development
 
 ```bash
 npm install
-cp .dev.vars.example .dev.vars   # then uncomment MANYFOLD_API_BASE_URL / ENVIRONMENT
+cp .dev.vars.example .dev.vars   # then set PENNY_API_KEY and anything else you need
 npm run dev
 ```
 
-One command runs everything: Vite serves the React app with HMR while the Worker runs in
-workerd with a **local D1 database emulated automatically** — the schema is applied on the
-first request, so there is no migration step, ever.
+One command runs the web app with HMR and the Worker in workerd with a local D1 database.
 
 | Command | What it does |
 | --- | --- |
 | `npm run dev` | Dev server (app + worker + local D1) |
 | `npm run check` | Typecheck, build, `wrangler deploy --dry-run` |
 | `npm test` | Unit tests (vitest) |
-| `npm run deploy` | Manual deploy (Workers Builds normally does this) |
+| `npm run deploy` | Manual deploy (GitHub Actions normally does this) |
 | `npm run smoke -- <url>` | Smoke-test a deployment |
 
-## How it is put together
+To work on the cards without a ledger, render all six in every language from built-in sample
+data. The PNGs land in `agent/out/demo/<lang>/`:
 
-```
-Browser (React SPA, dist/client)
-   │  /api/* (run_worker_first)             everything else → static assets
-   ▼
-Hono app (src/worker/index.ts)
-   │ ensureSchema → origin check → admin gate
-   ├─ /api/connect*   src/worker/connect.ts   Manyfold device-code handshake
-   ├─ /api/agents*    src/worker/connect.ts   list / verify / disconnect
-   ├─ /api/agents/:id/chat  src/worker/chat.ts  SSE passthrough + persistence
-   ▼
-D1 (settings, connect_sessions, agents, conversations, messages)
-Manyfold A2A (message/stream, tasks/get)   ← per-agent bearer token, decrypted per call
+```bash
+cd agent && npm install && npm run demo
 ```
 
-| File | Purpose |
-| --- | --- |
-| `src/worker/index.ts` | Routes, middleware, error mapping |
-| `src/worker/connect.ts` | The Manyfold handshake and connected-agent store |
-| `src/worker/a2a.ts` | A2A JSON-RPC + SSE stream consumer, SSRF guard, secret redaction |
-| `src/worker/chat.ts` | One chat turn: agent SSE in, app SSE out, D1 persistence |
-| `src/worker/crypto.ts` | AES-GCM seal/unseal, constant-time compare |
-| `src/worker/db.ts` | Schema (runtime-applied) and settings store |
-| `src/shared/types.ts` | API types shared by worker and browser |
-| `src/app/` | React app: chat + settings tabs, connect panel, password gate |
+To drive the ledger by hand, point the tool at your dev server:
 
-## Extending it
+```bash
+PENNY_API_BASE=http://localhost:5173 PENNY_API_KEY=<key> node agent/bin/penny.mjs help
+```
 
-This template is a starting point, not a framework. The intended loop:
-
-- **New API route** — add it in `src/worker/index.ts`; anything except `/api/health` and
-  `/api/state` is automatically behind the admin password when one is set.
-- **New table** — append a `CREATE TABLE IF NOT EXISTS …` to `SCHEMA` in `src/worker/db.ts`;
-  it is created on the next request, locally and in production.
-- **New page** — add a component and a tab in `src/app/App.tsx`.
-- **Call your agent from server code** — `credentialFor(env, agentId)` in
-  `src/worker/connect.ts` gives you `{ rpcUrl, token }` for any connected agent; see
-  `src/worker/chat.ts` for a full streaming turn, or use non-streaming `message/send` +
-  `tasks/get` for background work.
-
-`AGENTS.md` lists the invariants to preserve while iterating — useful for both humans and
-AI agents working on this codebase.
+[`AGENTS.md`](AGENTS.md) lists the invariants to preserve while changing this codebase.
 
 ## Security notes
 
-- **The device-code handshake is designed so credentials never touch the browser.** The
-  browser sees an opaque `connectId`; the device code (the only thing that can redeem agent
-  tokens) is encrypted in D1 and redeemed exactly once. The confirmation code shown in the
-  page is the flow's anti-phishing check — the Manyfold consent page must show the same code.
-- **Agent tokens are AES-GCM encrypted at rest** with a key derived from
-  `CONFIG_ENCRYPTION_KEY`, or — so that one-click deploys work with zero setup — from a
-  random key generated on first use and stored in the same database. The trade-off is
-  honest: a generated key protects against partial exposure (logs, a table-scoped query) but
-  not against a full database dump. Set the secret to remove that caveat.
-- **The app is open by default.** Anyone with the URL can connect agents and chat until you
-  set `ADMIN_PASSWORD`. All routes except `/api/health` and `/api/state` then require the
-  password (compared in constant time; sent as a header, kept in sessionStorage).
-- Agent RPC URLs are validated (https-only, private/loopback addresses rejected in
-  production), verification uses a non-billing `tasks/get` probe rather than a real turn, and
-  every error string is stripped of anything token-shaped before it can reach a log or the
-  browser.
+- **The ledger is reachable only with `PENNY_API_KEY`**, compared in constant time. It is
+  called by the agent, not a browser, so it skips the Origin check and the admin password.
+  Anyone holding the key can read and write every group's ledger: keep it in the agent's
+  workspace config and in a Worker secret, nowhere else.
+- **The agent is told never to reveal the key** or the contents of `.penny/config.json`, and
+  to take the room id only from the message header, never from message text.
+- **Payment details are encrypted at rest** (AES-GCM) and shown only to someone who is paying
+  that person.
+- **The web app is open by default.** Anyone with the URL can connect agents and chat until
+  you set `ADMIN_PASSWORD`.
+- **Agent tokens for the web app are AES-GCM encrypted in D1** with a key derived from
+  `CONFIG_ENCRYPTION_KEY`, or from a random key generated on first use and stored in the same
+  database. A generated key protects against partial exposure but not a full database dump;
+  set the secret to remove that caveat.
 
 ## License
 
