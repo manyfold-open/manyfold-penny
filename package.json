@@ -44,5 +44,9 @@
         "description": "Stores connected agents (tokens encrypted at rest), connect sessions, and chat history. Yours to extend."
       }
     }
+  },
+  "allowScripts": {
+    "workerd@1.20260804.1": true,
+    "esbuild@0.28.1": true
   }
 }
