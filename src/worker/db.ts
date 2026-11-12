@@ -11,6 +11,7 @@
  */
 
 import type { Env } from './types';
+import { LEDGER_SCHEMA } from './ledger/schema';
 
 export const now = (): string => new Date().toISOString();
 
@@ -81,7 +82,7 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
-`;
+${LEDGER_SCHEMA}`;
 
 /**
  * Split SQL into statements: drop `--` comments first, then split on ';'.

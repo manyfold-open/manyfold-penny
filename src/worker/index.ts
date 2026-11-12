@@ -13,10 +13,14 @@
  *   GET    /api/agents/:agentId/messages    admin  chat history
  *   DELETE /api/agents/:agentId/messages    admin  reset the conversation
  *   POST   /api/agents/:agentId/chat        admin  one chat turn (text/event-stream)
+ *   *      /api/ledger/*                    key    the ledger the Penny agent uses (see ledger/routes.ts)
  *
  * "admin" routes require the x-admin-password header — but only when the
  * ADMIN_PASSWORD secret is set. Without it the app is open, which is what makes
  * zero-config deploys work; set the secret before sharing the URL.
+ *
+ * "key" routes are called by the agent, not a browser: they skip the Origin check and the
+ * admin password and require `Authorization: Bearer <PENNY_API_KEY>` instead.
  */
 
 import { Hono } from 'hono';
@@ -35,8 +39,11 @@ import {
   verifyAgent,
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
+import ledger from './ledger/routes';
 
-const SERVICE = 'cloudflare-worker-starter';
+const SERVICE = 'manyfold-penny';
+
+const isLedger = (url: string): boolean => new URL(url).pathname.startsWith('/api/ledger/');
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -50,7 +57,7 @@ app.use('/api/*', async (c, next) => {
 // Same-origin check on every mutation: browsers always send Origin on cross-site
 // POSTs, so this shuts down CSRF without cookies or tokens.
 app.use('/api/*', async (c, next) => {
-  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+  if (!isLedger(c.req.url) && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
     const origin = c.req.header('origin');
     if (!origin) {
       throw new HttpError(403, 'origin_required', 'Mutation requests must include a same-origin Origin header.');
@@ -76,7 +83,7 @@ const adminHeaderOk = (c: { env: Env; req: { header: (name: string) => string | 
 // Everything except /api/health and /api/state needs the password (when one is set).
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (path !== '/api/health' && path !== '/api/state' && !adminHeaderOk(c)) {
+  if (path !== '/api/health' && path !== '/api/state' && !isLedger(c.req.url) && !adminHeaderOk(c)) {
     throw new HttpError(401, 'admin_password_invalid', 'This deployment requires the admin password.');
   }
   await next();
@@ -168,6 +175,8 @@ app.post('/api/agents/:agentId/chat', async (c) => {
     waitUntil: (promise) => c.executionCtx.waitUntil(promise),
   });
 });
+
+app.route('/api/ledger', ledger);
 
 app.all('/api/*', () => {
   throw new HttpError(404, 'not_found', 'No such API route.');

@@ -19,3 +19,8 @@
 # Set this (>=32 chars) to keep the key out of the database:
 #   npx wrangler secret put CONFIG_ENCRYPTION_KEY
 # CONFIG_ENCRYPTION_KEY=
+
+# Bearer key the Penny agent sends to /api/ledger/*. The ledger answers 503 until it is set.
+# Generate a long random value and give the same value to the agent:
+#   npx wrangler secret put PENNY_API_KEY
+# PENNY_API_KEY=

@@ -17,6 +17,8 @@ export interface Env {
   CONFIG_ENCRYPTION_KEY?: string;
   /** Optional: when set, all routes except /api/health and /api/state require x-admin-password. */
   ADMIN_PASSWORD?: string;
+  /** Bearer key the Penny agent presents to /api/ledger/*. The ledger is off without it. */
+  PENNY_API_KEY?: string;
 }
 
 /** Everything needed to talk to one agent over A2A. */
