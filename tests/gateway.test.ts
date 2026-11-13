@@ -223,8 +223,8 @@ describe('the room queue', () => {
     await enqueue(store, { message: msg('我剛付了 8 塊停車'), verdict: 'expense', enqueuedAt: Date.now() });
     const calls: string[] = [];
     const d = deps({
-      ack: async (item) => {
-        calls.push(`ack ${noteText(item, 'working')}`);
+      ack: async () => {
+        calls.push('ack');
         return '$note';
       },
       patch: async (_item, id, text) => {
@@ -232,7 +232,7 @@ describe('the room queue', () => {
       },
     });
     await drain(store, d);
-    expect(calls).toEqual(['ack 🐶 我看一下帳本…', 'patch $note re: @Penny 誰欠誰']);
+    expect(calls).toEqual(['ack', 'patch $note re: @Penny 誰欠誰']);
     expect(d.posted).toEqual(['re: 我剛付了 8 塊停車']);
   });
 
@@ -296,10 +296,39 @@ describe('the room queue', () => {
     expect(timings.answerS).toBeGreaterThanOrEqual(40);
   });
 
-  it('writes the note in the speaker\'s script', () => {
-    expect(noteText({ message: msg('how much did we spend') }, 'working')).toBe('🐶 One moment, checking…');
-    expect(noteText({ message: msg('这周花了多少') }, 'working')).toBe('🐶 我看一下账本…');
+  it('writes the note in the speaker\'s script, worded for what was asked', () => {
+    const en = ['🐶 Let me check the books…', '🐶 Looking it up…'];
+    expect(en).toContain(noteText({ message: msg('how much did we spend') }, 'working'));
+    expect(['🐶 我翻一下账本…', '🐶 我查一下哦…', '🐶 等我对一下账～']).toContain(noteText({ message: msg('这周花了多少') }, 'working'));
+    expect(['🐶 收到，我記一下…', '🐶 等我算一下～', '🐶 好，我來記…']).toContain(noteText({ message: msg('@Penny 晚餐 120 我付') }, 'working'));
+    expect(['🐶 好，處理中…', '🐶 收到～', '🐶 好喔，馬上弄']).toContain(noteText({ message: msg('OK #21') }, 'working'));
     expect(noteText({ message: msg('這週花了多少') }, 'failed')).toBe('🐶 剛剛卡住了，請再說一次。');
+  });
+
+  it('varies the note between messages, but keeps it for a retried one', () => {
+    const notes = new Set<string | null>();
+    for (let i = 0; i < 30; i++) notes.add(noteText({ message: msg('@Penny 誰欠誰', { eventId: `$e${i}` }) }, 'working'));
+    expect(notes.size).toBeGreaterThan(1);
+    const one = msg('@Penny 誰欠誰', { eventId: '$same' });
+    expect(noteText({ message: one }, 'working')).toBe(noteText({ message: one }, 'working'));
+  });
+
+  it('posts no note for small talk, and just answers', async () => {
+    for (const t of ['@Penny 嗨', '@Penny hi!', 'Penny 謝啦', '@Penny 晚安～', '@Penny 你好可愛', '@Penny']) {
+      expect(noteText({ message: msg(t) }, 'working')).toBeNull();
+    }
+    const store = new MemoryStore();
+    await enqueue(store, { message: msg('@Penny 嗨'), verdict: 'called', enqueuedAt: Date.now() });
+    const calls: string[] = [];
+    const d = deps({
+      ack: async () => {
+        calls.push('ack');
+        return '$note';
+      },
+    });
+    await drain(store, d);
+    expect(calls).toEqual([]);
+    expect(d.posted).toEqual(['re: @Penny 嗨']);
   });
 
   it('holds the room and retries a failed turn, then gives up', async () => {

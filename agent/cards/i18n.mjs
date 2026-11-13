@@ -13,7 +13,7 @@ const zhHant = {
   date: (m, d) => `${m}/${d}`,
   categories: {
     food: '餐飲', drinks: '酒水飲料', groceries: '雜貨', transport: '交通', accommodation: '住宿',
-    tickets: '門票', shopping: '購物', utilities: '水電', rent: '房租', other: '其他', settlement: '還款',
+    tickets: '門票', entertainment: '娛樂', shopping: '購物', utilities: '水電', rent: '房租', other: '其他', settlement: '還款',
   },
   // people
   peopleTitle: '每個人的狀況',
@@ -69,7 +69,7 @@ const zhHans = {
   font: 'Noto Sans SC',
   categories: {
     food: '餐饮', drinks: '酒水饮料', groceries: '杂货', transport: '交通', accommodation: '住宿',
-    tickets: '门票', shopping: '购物', utilities: '水电', rent: '房租', other: '其他', settlement: '还款',
+    tickets: '门票', entertainment: '娱乐', shopping: '购物', utilities: '水电', rent: '房租', other: '其他', settlement: '还款',
   },
   peopleTitle: '每个人的状况',
   receive: '↓ 要收回',
@@ -120,7 +120,7 @@ const en = {
   date: (m, d) => `${d} ${MONTHS[m - 1]}`,
   categories: {
     food: 'Food', drinks: 'Drinks', groceries: 'Groceries', transport: 'Transport', accommodation: 'Stay',
-    tickets: 'Tickets', shopping: 'Shopping', utilities: 'Utilities', rent: 'Rent', other: 'Other', settlement: 'Repayment',
+    tickets: 'Tickets', entertainment: 'Fun', shopping: 'Shopping', utilities: 'Utilities', rent: 'Rent', other: 'Other', settlement: 'Repayment',
   },
   peopleTitle: 'Where everyone stands',
   receive: '↓ Gets back',

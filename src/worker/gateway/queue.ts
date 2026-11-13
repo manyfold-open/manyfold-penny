@@ -66,14 +66,100 @@ const pad = (n: number) => String(n).padStart(16, '0');
 const SILENCE = /^\s*(?:\(empty response\)|no response(?: requested)?\.?|\[no reply\]|\.{0,3})\s*$/i;
 export const isSilence = (answer: string) => SILENCE.test(answer);
 
+type Script = 'en' | 'hans' | 'hant';
+type Intent = 'confirm' | 'record' | 'lookup' | 'photo' | 'other';
+
+function scriptOf(text: string): Script {
+  if (/[a-z]{3}/i.test(text) && !/[\u3400-\u9fff]/.test(text)) return 'en';
+  return /[这们说帐账还么为钱谁吗过]/.test(text) ? 'hans' : 'hant';
+}
+
+/** Penny's "one moment" notes, by what the message asks of her. A person does not answer every
+ *  message with the same words, so neither does she: one is picked per message. */
+const NOTES: Record<Intent, Record<Script, string[]>> = {
+  confirm: {
+    hant: ['🐶 好，處理中…', '🐶 收到～', '🐶 好喔，馬上弄'],
+    hans: ['🐶 好，处理中…', '🐶 收到～', '🐶 好哦，马上弄'],
+    en: ['🐶 On it…', '🐶 Got it, one sec…'],
+  },
+  record: {
+    hant: ['🐶 收到，我記一下…', '🐶 等我算一下～', '🐶 好，我來記…'],
+    hans: ['🐶 收到，我记一下…', '🐶 等我算一下～', '🐶 好，我来记…'],
+    en: ['🐶 Got it, writing it down…', '🐶 One sec, doing the maths…'],
+  },
+  lookup: {
+    hant: ['🐶 我翻一下帳本…', '🐶 我查一下喔…', '🐶 等我對一下帳～'],
+    hans: ['🐶 我翻一下账本…', '🐶 我查一下哦…', '🐶 等我对一下账～'],
+    en: ['🐶 Let me check the books…', '🐶 Looking it up…'],
+  },
+  photo: {
+    hant: ['🐶 我看一下這張…', '🐶 收到照片，我看看～'],
+    hans: ['🐶 我看一下这张…', '🐶 收到照片，我看看～'],
+    en: ['🐶 Let me take a look…', '🐶 Reading it…'],
+  },
+  other: {
+    hant: ['🐶 嗯…我想一下', '🐶 等我一下喔～', '🐶 好，我看看'],
+    hans: ['🐶 嗯…我想一下', '🐶 等我一下哦～', '🐶 好，我看看'],
+    en: ['🐶 Hmm, one moment…', '🐶 Give me a sec…'],
+  },
+};
+
+const FAILED: Record<Script, string> = {
+  hant: '🐶 剛剛卡住了，請再說一次。',
+  hans: '🐶 刚刚卡住了，请再说一次。',
+  en: '🐶 Sorry, I got stuck on that one. Please try again.',
+};
+
+// What the message asks of Penny, read from its words alone.
+const CONFIRM = /^\s*(?:全部\s*)?(?:ok|okay|yes|好|好的|好喔|好哦|對|对|沒錯|没错|確認|确认|可以|收到|\+1|👍|👌|✅|取消|改成|改為|改为|不要|先不要|算了)/i;
+const LOOKUP =
+  /欠|多少|結算|结算|帳|账|總共|总共|花在|誰付|谁付|查|明細|明细|紀錄|记录|summary|balance|owe|how much|who paid|settle|total|link|連結|链接|卡片|card/i;
+const MONEY = /\d|付|花了|買|买|請客|请客|墊|垫|轉|转|還|还|AA|分帳|分账|平分|paid|spent|split/i;
+// A greeting, thanks or a little chatter: a person would just answer, not say "let me check".
+const CHAT =
+  /^(?:嗨+|hi+|hey+|hello|哈囉|哈啰|你好|您好|早安?|午安|晚安|早上好|晚上好|在嗎|在吗|在不在|謝謝|谢谢|感謝|感谢|多謝|多谢|謝啦|谢啦|thx|thanks?|thank you|ty|讚|赞|棒|好棒|厲害|厉害|可愛|可爱|乖|哈哈+|呵呵|lol|haha+|😂|🤣|❤️|🥰|😊|🐶|你是誰|你是谁|who are you|bye|掰掰?|拜拜)[\s!！。.~～?？,，]*(?:penny|呀|啊|喔|哦|啦|囉|嘛|欸)?[\s!！。.~～?？]*$/i;
+
+/** Drop the @mention and Penny's names, so "@Penny 嗨" reads as "嗨". */
+function bare(text: string): string {
+  return text
+    .replace(/@\S+/g, ' ')
+    .replace(/\bpenny\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function intentOf(item: Pick<QueuedMessage, 'message'>): Intent | 'chat' {
+  const { message } = item;
+  if (message.kind === 'image') return 'photo';
+  const text = bare(message.text);
+  if (!text) return 'chat';
+  if (CHAT.test(text)) return 'chat';
+  if (CONFIRM.test(text) && text.length <= 20) return 'confirm';
+  if (LOOKUP.test(text)) return 'lookup';
+  if (MONEY.test(text)) return 'record';
+  // A few words with nothing about money ("你在幹嘛", "好可愛"): just talk.
+  if (text.length <= 8) return 'chat';
+  return 'other';
+}
+
+/** Same message, same pick: a retried note never changes its words. */
+function pick<T>(list: T[], seed: string): T {
+  let h = 0;
+  for (const c of seed) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return list[h % list.length];
+}
+
 /** Penny's "one moment" note, and what it becomes if her turn fails for good. In the
- *  speaker's script when the message shows it; Chinese otherwise. */
-export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' | 'failed'): string {
-  const text = item.message.text;
-  const english = /[a-z]{3}/i.test(text) && !/[\u3400-\u9fff]/.test(text);
-  const simplified = /[这们说帐账还么为]/.test(text);
-  if (kind === 'working') return english ? '🐶 One moment, checking…' : simplified ? '🐶 我看一下账本…' : '🐶 我看一下帳本…';
-  return english ? '🐶 Sorry, I got stuck on that one. Please try again.' : simplified ? '🐶 刚刚卡住了，请再说一次。' : '🐶 剛剛卡住了，請再說一次。';
+ *  speaker's script when the message shows it; Traditional Chinese otherwise. Small talk gets
+ *  no note at all (null): she just answers, as a person would. */
+export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working'): string | null;
+export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'failed'): string;
+export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' | 'failed'): string | null {
+  const script = scriptOf(item.message.text);
+  if (kind === 'failed') return FAILED[script];
+  const intent = intentOf(item);
+  if (intent === 'chat') return null;
+  return pick(NOTES[intent][script], item.message.eventId);
 }
 
 /** Add a message unless this event was seen already (Narra may deliver twice). */
@@ -110,7 +196,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       // Someone talked to Penny directly: show that she is on it before her turn starts.
       // Not for a reaction: a 👍 on a message with nothing pending gets no answer, and a note
       // that is posted and then deleted shows up in the room as "Penny recalled a message".
-      if (item.verdict === 'called' && item.message.kind !== 'reaction' && !item.ackId && deps.ack) {
+      // Not for small talk either: nobody says "let me check" before answering a "hi".
+      if (item.verdict === 'called' && item.message.kind !== 'reaction' && !item.ackId && deps.ack && noteText(item, 'working')) {
         try {
           const ackId = await deps.ack(item);
           if (ackId) {

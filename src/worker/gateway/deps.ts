@@ -11,7 +11,7 @@ export function pennyDeps(env: Env): Deps {
     post: async (item, text) => {
       await postToRoom(env, item.message.roomId, text, item.message.eventId);
     },
-    ack: (item) => postToRoom(env, item.message.roomId, noteText(item, 'working'), `${item.message.eventId}:note`),
+    ack: (item) => postToRoom(env, item.message.roomId, noteText(item, 'working') ?? '', `${item.message.eventId}:note`),
     patch: (item, ackId, text) => patchInRoom(env, item.message.roomId, ackId, text, `${item.message.eventId}:answer`),
     remove: (item, ackId) => deleteInRoom(env, item.message.roomId, ackId, `${item.message.eventId}:remove`),
     retryable: (error) =>

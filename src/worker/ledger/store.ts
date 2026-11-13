@@ -103,6 +103,7 @@ const CATEGORIES = new Set([
   'transport',
   'accommodation',
   'tickets',
+  'entertainment',
   'shopping',
   'utilities',
   'rent',

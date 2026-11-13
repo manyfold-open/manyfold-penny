@@ -59,11 +59,12 @@ export async function groupForToken(env: Env, token: string): Promise<string | n
 const SYMBOLS: Record<string, string> = { GBP: '£', USD: '$', EUR: '€', JPY: '¥', CNY: '¥', TWD: 'NT$', HKD: 'HK$' };
 const CATEGORIES: Record<string, string> = {
   food: '餐飲',
-  drinks: '飲料',
-  groceries: '日用品',
+  drinks: '酒水飲料',
+  groceries: '雜貨',
   transport: '交通',
   accommodation: '住宿',
-  tickets: '票券',
+  tickets: '門票',
+  entertainment: '娛樂',
   shopping: '購物',
   utilities: '水電',
   rent: '房租',
