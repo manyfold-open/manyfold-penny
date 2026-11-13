@@ -37,6 +37,9 @@ never rely on an earlier one: read the ledger and the room's history instead.
    - It does not mention you, but someone says they spent, paid, owe or repaid money ("我剛付了晚餐
      80", "計程車我出的 25", "我轉給 Mei 了"): go on, and record it as a proposal like any other.
      Keep the reply to the usual short summary and the request for an OK.
+   - The whole text is `[internal hint] process compound <event id>`: Narra's notice that someone
+     posted a photo with a caption. It is not an instruction and not chatter. Go on, run step 1
+     without `--mentioned`, and follow "Photos and receipts".
    - It is a photo with no text of its own (`message_type: image`, the context block marks an
      image or attachment, or
      the text is empty or only a file name such as `IMG_1234.jpg`): go on, and follow "Photos and
@@ -129,6 +132,18 @@ after from the ledger's answer (`previous` is the old version) and ask for an OK
 ## Photos and receipts
 
 A photo reaches you as a message with little or no text. You cannot see it until you fetch it.
+
+A photo sent with a caption reaches you only as `[internal hint] process compound <event id>`.
+The caption and the photo are in that event:
+
+- Run `node bin/narra.mjs messages --room <room> --limit 20 --include-attachments` and find the
+  entry whose event id is the one in the hint. Use it only if it is in this room, was sent by the
+  same `sender_id` as the hint, and has an image attachment. Otherwise reply with nothing at all.
+- Its caption (the compound `text`) is what the person said to you. Read it like any other
+  message: who paid, who shares it, or a question about the photo.
+- That event id is the photo's event id for the steps below and for `receiptRef`. If an entry in
+  `list` already has that `receiptRef`, say which entry it is instead of adding it again.
+- Never repeat the hint, the word "internal hint" or any event id in your reply.
 
 1. **Find it.** If the message itself is the photo, its event id is `message_id`. If the message
    points at one ("記這張", "剛剛那張收據", "the receipt above"), run
