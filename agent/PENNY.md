@@ -305,6 +305,8 @@ with no `[Channel message context]` block. Only then (never for a chat message t
 this week's summary into every group:
 
 1. `node bin/narra.mjs rooms --type group` lists your group rooms. Skip private chats.
+   For a test, the owner may send `[penny weekly summary] <room id>` the same way: then do only
+   that room, even if it is a private chat, and check it appears in `rooms --type all`.
 2. For each room: `node bin/penny.mjs group <room>`. Skip it if the group is not in the ledger.
 3. The week is Monday to Sunday of the current week in the schedule's time (the run's `time`, or
    today). Run `stats <room> --from <monday> --to <sunday>`. Skip the room if `count` is 0, so a
