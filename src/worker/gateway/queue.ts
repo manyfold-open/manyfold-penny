@@ -16,6 +16,7 @@ import type { Env } from '../types';
 import { pennyDeps } from './deps';
 import type { InboundMessage } from './inbound';
 import type { Verdict } from './filter';
+import { remember } from './poller';
 
 export interface QueuedMessage {
   message: InboundMessage;
@@ -83,7 +84,9 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
     }
     try {
       const answer = await deps.turn(item);
-      if (answer && !isSilence(answer)) await deps.post(item, answer);
+      const posted = Boolean(answer) && !isSilence(answer);
+      if (posted) await deps.post(item, answer);
+      deps.log(`answered ${item.message.eventId} (${posted ? 'posted' : 'silent'})`);
       await store.delete(key);
     } catch (error) {
       const attempts = item.attempts + 1;
@@ -124,6 +127,10 @@ export class RoomQueue {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (request.method === 'GET') {
+      const queued = await this.state.storage.list({ prefix: 'q:', limit: 200 });
+      return Response.json({ queued: queued.size, alarm: await this.state.storage.getAlarm(), log: (await this.state.storage.get<string[]>('log')) ?? [] });
+    }
     const item = (await request.json()) as Omit<QueuedMessage, 'attempts'>;
     const result = await enqueue(this.store(), item);
     if (result === 'queued' && (await this.state.storage.getAlarm()) === null) {
@@ -133,7 +140,16 @@ export class RoomQueue {
   }
 
   async alarm(): Promise<void> {
-    const delay = await drain(this.store(), pennyDeps(this.env));
+    const base = pennyDeps(this.env);
+    const storage = this.state.storage;
+    const delay = await drain(this.store(), {
+      ...base,
+      log: (line) => {
+        base.log(line);
+        // Not awaited by drain's signature; the write is quick and ordered within this object.
+        void remember(storage, line);
+      },
+    });
     if (delay !== null) await this.state.storage.setAlarm(Date.now() + delay);
   }
 }

@@ -183,6 +183,31 @@ app.post('/api/agents/:agentId/chat', async (c) => {
   });
 });
 
+// What the Narra gateway last did: poller state per room, queue sizes and recent log lines.
+// Behind the admin password like every other /api route. Never shows message text or tokens.
+app.get('/api/gateway/status', async (c) => {
+  const env = c.env;
+  if (!env.NARRA_POLLER) return c.json({ enabled: false, reason: 'no poller binding' });
+  const poller = (await (await env.NARRA_POLLER.get(env.NARRA_POLLER.idFromName('narra')).fetch('https://narra-poller/status')).json()) as {
+    rooms: Record<string, unknown>;
+  } & Record<string, unknown>;
+  const queues: Record<string, unknown> = {};
+  if (env.ROOM_QUEUE) {
+    for (const roomId of Object.keys(poller.rooms ?? {})) {
+      queues[roomId] = await (await env.ROOM_QUEUE.get(env.ROOM_QUEUE.idFromName(roomId)).fetch('https://room-queue/status')).json();
+    }
+  }
+  return c.json({
+    config: {
+      NARRA_GATEWAY: (env.NARRA_GATEWAY ?? '').trim() || null,
+      PENNY_AGENT_ID: Boolean((env.PENNY_AGENT_ID ?? '').trim()),
+      NARRA_AGENT_TOKEN: Boolean((env.NARRA_AGENT_TOKEN ?? '').trim()),
+    },
+    poller,
+    queues,
+  });
+});
+
 app.route('/api/ledger', ledger);
 
 app.all('/api/*', () => {

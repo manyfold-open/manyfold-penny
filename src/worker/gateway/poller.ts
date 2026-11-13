@@ -86,6 +86,7 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
     if (!s.cursor) {
       // First sight of this room: start from now. Earlier messages stay in the history.
       s.cursor = await api.head(room.roomId);
+      sink.log(`started reading ${room.roomId}${s.cursor ? '' : ' (no position yet)'}`);
       s.nextPollAt = now + ACTIVE_EVERY_MS;
     } else {
       const { events, next } = await api.after(room.roomId, s.cursor);
@@ -118,9 +119,13 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
         }
         s.lastActivity = now;
         const verdict = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
-        if (verdict !== 'skip') await sink.deliver(message, verdict);
+        if (verdict !== 'skip') {
+          await sink.deliver(message, verdict);
+          sink.log(`queued ${message.eventId} in ${room.roomId} (${verdict})`);
+        }
       }
       await store.put(pennyKey(room.roomId), mine);
+      if (events.length) sink.log(`read ${events.length} event(s) in ${room.roomId}`);
       if (next) s.cursor = next;
       s.nextPollAt = now + (now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS);
     }
@@ -130,6 +135,15 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
   }
   await store.put(roomKey(room.roomId), s);
   return TICK_MS;
+}
+
+const LOG_LINES = 30;
+
+/** Keep the last few log lines in storage, so /api/gateway/status can show them. */
+export async function remember(storage: DurableObjectStorage, line: string): Promise<void> {
+  const log = (await storage.get<string[]>('log')) ?? [];
+  log.push(`${new Date().toISOString()} ${line}`);
+  await storage.put('log', log.slice(-LOG_LINES));
 }
 
 export function gatewayEnabled(env: Env): boolean {
@@ -161,8 +175,32 @@ export class NarraPoller {
     };
   }
 
-  /** Called by the cron trigger: make sure the loop is running (or stopped, if switched off). */
-  async fetch(): Promise<Response> {
+  /** Called by the cron trigger: make sure the loop is running (or stopped, if switched off).
+   *  GET .../status reports what the poller last did, for /api/gateway/status. */
+  async fetch(request?: Request): Promise<Response> {
+    if (request && new URL(request.url).pathname.endsWith('/status')) {
+      const rooms = (await this.state.storage.get<RoomsState>('rooms')) ?? null;
+      const perRoom: Record<string, unknown> = {};
+      for (const room of rooms?.rooms ?? []) {
+        const s = await this.state.storage.get<RoomState>(roomKey(room.roomId));
+        perRoom[room.roomId] = {
+          type: room.type,
+          title: room.title,
+          started: Boolean(s?.cursor),
+          lastActivity: s?.lastActivity ? new Date(s.lastActivity).toISOString() : null,
+          nextPollAt: s?.nextPollAt ? new Date(s.nextPollAt).toISOString() : null,
+        };
+      }
+      return Response.json({
+        enabled: gatewayEnabled(this.env),
+        alarm: await this.state.storage.getAlarm(),
+        lastTick: (await this.state.storage.get<number>('lastTick')) ?? null,
+        roomsRefreshedAt: rooms ? new Date(rooms.refreshedAt).toISOString() : null,
+        agentId: rooms?.agentId ?? null,
+        rooms: perRoom,
+        log: (await this.state.storage.get<string[]>('log')) ?? [],
+      });
+    }
     if (!gatewayEnabled(this.env)) {
       await this.state.storage.deleteAlarm();
       return Response.json({ running: false });
@@ -186,8 +224,12 @@ export class NarraPoller {
           body: JSON.stringify({ message, verdict, enqueuedAt: Date.now() }),
         });
       },
-      log: (line) => console.log(`[poller] ${line}`),
+      log: async (line) => {
+        console.log(`[poller] ${line}`);
+        await remember(this.state.storage, line);
+      },
     });
+    await this.state.storage.put('lastTick', Date.now());
     await this.state.storage.setAlarm(Date.now() + delay);
   }
 }
