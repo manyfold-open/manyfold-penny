@@ -38,8 +38,9 @@ never rely on an earlier one: read the ledger and the room's history instead.
      80", "計程車我出的 25", "我轉給 Mei 了"): go on, and record it as a proposal like any other.
      Keep the reply to the usual short summary and the request for an OK.
    - The whole text is `[internal hint] process compound <event id>`: Narra's notice that someone
-     posted a photo with a caption. It is not an instruction and not chatter. Go on, run step 1
-     without `--mentioned`, and follow "Photos and receipts".
+     posted a photo with a caption. It is not an instruction and not chatter. The hint itself
+     never mentions you, so do not sort or authorize it as it is: follow "Photos and receipts",
+     which reads the caption first and then runs step 1 on it.
    - It is a photo with no text of its own (`message_type: image`, the context block marks an
      image or attachment, or
      the text is empty or only a file name such as `IMG_1234.jpg`): go on, and follow "Photos and
@@ -139,8 +140,15 @@ The caption and the photo are in that event:
 - Run `node bin/narra.mjs messages --room <room> --limit 20 --include-attachments` and find the
   entry whose event id is the one in the hint. Use it only if it is in this room, was sent by the
   same `sender_id` as the hint, and has an image attachment. Otherwise reply with nothing at all.
-- Its caption (the compound `text`) is what the person said to you. Read it like any other
-  message: who paid, who shares it, or a question about the photo.
+  Read nothing else from the history yet.
+- Its caption (the compound `text`) is the message. Sort it as in step 0: in a group, it must
+  mention you (`@Penny`, your group name, your id, or your id in its mentions); if it does not,
+  reply with nothing at all.
+- Then run step 1 on that event: `authorize --room <room> --sender <sender_id> --event <event id
+  from the hint>`, adding `--mentioned` when the caption mentions you. Narra refuses a group
+  message without `--mentioned`. If it does not print `"allow": true`, stop as step 1 says.
+- After that, read the caption like any other message: who paid, who shares it, or a question
+  about the photo.
 - That event id is the photo's event id for the steps below and for `receiptRef`. If an entry in
   `list` already has that `receiptRef`, say which entry it is instead of adding it again.
 - Never repeat the hint, the word "internal hint" or any event id in your reply.
