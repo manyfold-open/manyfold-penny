@@ -31,6 +31,8 @@ export interface Group {
   botName: string;
   defaultSplit: SplitSpec | null;
   simplify: boolean;
+  /** IANA time zone, e.g. Asia/Taipei. "Today" means today here. */
+  timezone: string;
 }
 
 export interface Member {
@@ -118,8 +120,46 @@ function text(value: unknown, max: number, field: string): string {
   return trimmed;
 }
 
-function day(value: unknown): string {
-  if (value === undefined || value === null || value === '') return new Date().toISOString().slice(0, 10);
+/** Where a group probably is, from its currency, until someone sets its time zone. */
+const ZONE_BY_CURRENCY: Record<string, string> = {
+  TWD: 'Asia/Taipei',
+  JPY: 'Asia/Tokyo',
+  KRW: 'Asia/Seoul',
+  HKD: 'Asia/Hong_Kong',
+  CNY: 'Asia/Shanghai',
+  SGD: 'Asia/Singapore',
+  MYR: 'Asia/Kuala_Lumpur',
+  THB: 'Asia/Bangkok',
+  VND: 'Asia/Ho_Chi_Minh',
+  IDR: 'Asia/Jakarta',
+  PHP: 'Asia/Manila',
+  GBP: 'Europe/London',
+  EUR: 'Europe/Paris',
+  CHF: 'Europe/Zurich',
+  AUD: 'Australia/Sydney',
+  NZD: 'Pacific/Auckland',
+};
+
+export const zoneFor = (currency: string) => ZONE_BY_CURRENCY[currency.toUpperCase()] ?? 'UTC';
+
+function timeZone(value: unknown): string {
+  if (typeof value === 'string' && value.length <= 64) {
+    try {
+      return new Intl.DateTimeFormat('en-US', { timeZone: value }).resolvedOptions().timeZone;
+    } catch {
+      /* falls through */
+    }
+  }
+  return invalid('invalid_field', 'timezone must be an IANA time zone like Asia/Taipei.');
+}
+
+/** Today's date (YYYY-MM-DD) in a time zone. en-CA formats dates as YYYY-MM-DD. */
+export function today(zone: string, at = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+}
+
+function day(value: unknown, zone = 'UTC'): string {
+  if (value === undefined || value === null || value === '') return today(zone);
   // Date.parse accepts 2026-02-30 (it rolls over to March), so check the date reads back the same.
   const real = (v: string) => !Number.isNaN(Date.parse(v)) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !real(value)) {
@@ -143,6 +183,7 @@ interface GroupRow {
   bot_name: string;
   default_split: string | null;
   simplify: number;
+  timezone: string | null;
 }
 
 const toGroup = (row: GroupRow): Group => ({
@@ -153,6 +194,7 @@ const toGroup = (row: GroupRow): Group => ({
   botName: row.bot_name,
   defaultSplit: row.default_split ? (JSON.parse(row.default_split) as SplitSpec) : null,
   simplify: row.simplify === 1,
+  timezone: row.timezone ?? zoneFor(row.currency),
 });
 
 interface ExpenseRow {
@@ -191,7 +233,8 @@ interface SettlementRow {
 
 export async function getGroup(env: Env, groupId: string): Promise<Group> {
   const row = await env.DB.prepare(
-    'SELECT id, name, currency, minor_unit, bot_name, default_split, simplify FROM ledger_groups WHERE id = ?',
+    `SELECT g.id, g.name, g.currency, g.minor_unit, g.bot_name, g.default_split, g.simplify, p.timezone
+       FROM ledger_groups g LEFT JOIN ledger_group_prefs p ON p.group_id = g.id WHERE g.id = ?`,
   )
     .bind(groupId)
     .first<GroupRow>();
@@ -204,6 +247,7 @@ export interface GroupSettings {
   botName?: string;
   defaultSplit?: SplitSpec | null;
   simplify?: boolean;
+  timezone?: string;
 }
 
 /** Create the group's ledger, or change its settings. Currency is fixed once money is recorded. */
@@ -214,6 +258,16 @@ export async function upsertGroup(env: Env, groupId: string, settings: GroupSett
   const stamp = now();
 
   if (settings.defaultSplit) computeShares(10_000, settings.defaultSplit);
+  const zone = settings.timezone === undefined ? undefined : timeZone(settings.timezone);
+  const saveZone = async () => {
+    if (zone === undefined) return;
+    await env.DB.prepare(
+      `INSERT INTO ledger_group_prefs (group_id, timezone, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT (group_id) DO UPDATE SET timezone = excluded.timezone, updated_at = excluded.updated_at`,
+    )
+      .bind(groupId, zone, stamp)
+      .run();
+  };
   const defaultSplit =
     settings.defaultSplit === undefined ? undefined : settings.defaultSplit ? JSON.stringify(settings.defaultSplit) : null;
 
@@ -238,6 +292,7 @@ export async function upsertGroup(env: Env, groupId: string, settings: GroupSett
         stamp,
       )
       .run();
+    await saveZone();
     return getGroup(env, groupId);
   }
 
@@ -281,23 +336,35 @@ export async function upsertGroup(env: Env, groupId: string, settings: GroupSett
       .bind(...values)
       .run();
   }
+  await saveZone();
   return getGroup(env, groupId);
 }
 
-export async function listMembers(env: Env, groupId: string): Promise<Member[]> {
-  const { results } = await env.DB.prepare(
+interface MemberRow {
+  member_id: string;
+  display_name: string;
+  is_guest: number;
+  sponsor_id: string | null;
+  active: number;
+}
+
+const membersQuery = (env: Env, groupId: string) =>
+  env.DB.prepare(
     `SELECT member_id, display_name, is_guest, sponsor_id, active FROM ledger_members
      WHERE group_id = ? ORDER BY created_at, member_id`,
-  )
-    .bind(groupId)
-    .all<{ member_id: string; display_name: string; is_guest: number; sponsor_id: string | null; active: number }>();
-  return results.map((r) => ({
-    id: r.member_id,
-    name: r.display_name,
-    isGuest: r.is_guest === 1,
-    sponsorId: r.sponsor_id,
-    active: r.active === 1,
-  }));
+  ).bind(groupId);
+
+const toMember = (r: MemberRow): Member => ({
+  id: r.member_id,
+  name: r.display_name,
+  isGuest: r.is_guest === 1,
+  sponsorId: r.sponsor_id,
+  active: r.active === 1,
+});
+
+export async function listMembers(env: Env, groupId: string): Promise<Member[]> {
+  const { results } = await membersQuery(env, groupId).all<MemberRow>();
+  return results.map(toMember);
 }
 
 /**
@@ -492,11 +559,16 @@ export async function getEntry(env: Env, groupId: string, seq: number): Promise<
 export async function listPending(env: Env, groupId: string): Promise<Entry[]> {
   await getGroup(env, groupId);
   const expenses = await expenseRows(env, `group_id = ? AND status = 'pending' ORDER BY created_at`, groupId);
-  for (const entry of expenses) {
-    if (entry.version > 1) {
-      const [previous] = await expenseRows(env, `group_id = ? AND seq = ? AND status = 'active'`, groupId, entry.seq);
-      if (previous) entry.previous = previous;
-    }
+  const changed = expenses.filter((e) => e.version > 1).map((e) => e.seq);
+  if (changed.length > 0) {
+    const previous = await expenseRows(
+      env,
+      `group_id = ? AND status = 'active' AND seq IN (SELECT value FROM json_each(?))`,
+      groupId,
+      JSON.stringify(changed),
+    );
+    const bySeq = new Map(previous.map((e) => [e.seq, e]));
+    for (const entry of expenses) if (bySeq.has(entry.seq)) entry.previous = bySeq.get(entry.seq);
   }
   const { results } = await env.DB.prepare(
     `SELECT * FROM ledger_settlements WHERE group_id = ? AND status = 'pending' ORDER BY created_at`,
@@ -581,7 +653,7 @@ function resolveExpense(group: Group, members: Map<string, Member>, input: Expen
     category,
     amount,
     kind,
-    spentOn: day(input.spentOn),
+    spentOn: day(input.spentOn, group.timezone),
     payers,
     split,
     shares,
@@ -610,7 +682,7 @@ function insertExpense(
       data?.category ?? 'other',
       data?.amount ?? 0,
       group.currency,
-      data?.spentOn ?? new Date().toISOString().slice(0, 10),
+      data?.spentOn ?? today(group.timezone),
       JSON.stringify(data?.split ?? null),
       data?.receiptRef ?? null,
       row.replacesId,
@@ -685,7 +757,6 @@ export async function proposeEdit(
   requireActor(members, createdBy, 'createdBy');
   const current = await activeVersion(env, groupId, seq);
   const before = current.entry;
-  const raw = await env.DB.prepare('SELECT split FROM ledger_expenses WHERE id = ?').bind(current.id).first<{ split: string }>();
   const amountChanged = changes.amount !== undefined && changes.amount !== before.amount;
 
   const merged: ExpenseInput = {
@@ -699,7 +770,7 @@ export async function proposeEdit(
       changes.payers ??
       (changes.paidBy !== undefined || (amountChanged && before.payers.length === 1) ? undefined : before.payers),
     paidBy: changes.paidBy ?? (amountChanged && before.payers.length === 1 ? before.payers[0].member : undefined),
-    split: changes.split ?? (JSON.parse(raw!.split) as SplitSpec),
+    split: changes.split ?? before.split ?? undefined,
     receiptRef: changes.receiptRef === undefined ? before.receiptRef : changes.receiptRef,
   };
   const already = new Set([...before.payers, ...before.shares].map((l) => l.member));
@@ -756,6 +827,47 @@ export async function proposeSettlement(
 
 /* ───────── confirming ───────── */
 
+/**
+ * Who may OK a change to an expense: never the person who proposed it, so nobody can record a
+ * debt on someone else alone. If anyone else still in the group is on the entry (paid, shares
+ * it, or sponsors a guest who shares it, in the new version or the one it replaces), it must be
+ * one of them. Otherwise anyone else in the group may. A group of one confirms its own entries.
+ */
+async function checkConfirmer(
+  env: Env,
+  members: Map<string, Member>,
+  pending: { id: string; replaces_id: string | null; created_by: string },
+  by: string,
+  seq: number,
+): Promise<void> {
+  const people = [...members.values()].filter((m) => m.active && !m.isGuest);
+  if (people.length <= 1) return;
+  const name = (id: string) => members.get(id)?.name ?? id;
+  if (by === pending.created_by) {
+    throw new HttpError(403, 'someone_else_must_confirm', `${name(by)} proposed #${seq}, so someone else has to OK it.`);
+  }
+  const ids = JSON.stringify([pending.id, pending.replaces_id].filter(Boolean));
+  const { results } = await env.DB.prepare(
+    `SELECT member_id FROM ledger_payers WHERE expense_id IN (SELECT value FROM json_each(?1))
+     UNION SELECT member_id FROM ledger_shares WHERE expense_id IN (SELECT value FROM json_each(?1))`,
+  )
+    .bind(ids)
+    .all<{ member_id: string }>();
+  const involved = new Set<string>();
+  for (const { member_id } of results) {
+    const member = members.get(member_id);
+    const owner = member?.isGuest ? member.sponsorId : member_id;
+    if (owner && owner !== pending.created_by && members.get(owner)?.active) involved.add(owner);
+  }
+  if (involved.size > 0 && !involved.has(by)) {
+    throw new HttpError(
+      403,
+      'involved_must_confirm',
+      `Only someone on #${seq} can OK it: ${[...involved].map(name).join(', ')}.`,
+    );
+  }
+}
+
 /** Confirm the pending change on #seq. Returns the entry as it now stands. */
 export async function confirm(env: Env, groupId: string, seq: number, by: string): Promise<Entry> {
   const members = await memberMap(env, groupId);
@@ -781,11 +893,12 @@ export async function confirm(env: Env, groupId: string, seq: number, by: string
   }
 
   const pending = await env.DB.prepare(
-    `SELECT id, kind, replaces_id FROM ledger_expenses WHERE group_id = ? AND seq = ? AND status = 'pending'`,
+    `SELECT id, kind, replaces_id, created_by FROM ledger_expenses WHERE group_id = ? AND seq = ? AND status = 'pending'`,
   )
     .bind(groupId, seq)
-    .first<{ id: string; kind: string; replaces_id: string | null }>();
+    .first<{ id: string; kind: string; replaces_id: string | null; created_by: string }>();
   if (!pending) notFound('nothing_pending', `#${seq} has nothing waiting for an OK.`);
+  await checkConfirmer(env, members, pending!, by, seq);
 
   const statements = [
     env.DB.prepare(
@@ -826,8 +939,8 @@ export async function cancel(env: Env, groupId: string, seq: number, by: string)
 /* ───────── balances and summaries ───────── */
 
 /** Net position per member from confirmed entries: positive means others owe them. */
-async function rawNets(env: Env, groupId: string): Promise<Record<string, number>> {
-  const { results } = await env.DB.prepare(
+const rawNetsQuery = (env: Env, groupId: string) =>
+  env.DB.prepare(
     `SELECT member_id, SUM(amount) AS net FROM (
        SELECT p.member_id AS member_id, CASE e.kind WHEN 'refund' THEN -p.amount ELSE p.amount END AS amount
          FROM ledger_payers p JOIN ledger_expenses e ON e.id = p.expense_id
@@ -841,10 +954,33 @@ async function rawNets(env: Env, groupId: string): Promise<Record<string, number
        UNION ALL
        SELECT to_member, -amount FROM ledger_settlements WHERE group_id = ?1 AND status = 'active'
      ) GROUP BY member_id`,
-  )
-    .bind(groupId)
-    .all<{ member_id: string; net: number }>();
-  return Object.fromEntries(results.map((r) => [r.member_id, r.net]));
+  ).bind(groupId);
+
+/** Net positions with guests folded into their sponsor, and the settle-up plan. Pure. */
+function settle(groupId: string, members: Map<string, Member>, raw: { member_id: string; net: number }[]) {
+  const nets: Record<string, number> = {};
+  for (const { member_id: member, net: amount } of raw) {
+    const owner = members.get(member)?.isGuest ? (members.get(member)?.sponsorId ?? member) : member;
+    nets[owner] = (nets[owner] ?? 0) + amount;
+  }
+  const total = Object.values(nets).reduce((acc, v) => acc + v, 0);
+  if (total !== 0) throw new Error(`ledger invariant broken for ${groupId}: nets add up to ${total}`);
+  return {
+    nets: Object.entries(nets)
+      .filter(([, v]) => v !== 0)
+      .map(([member, amount]) => ({ member, amount }))
+      .sort((a, b) => b.amount - a.amount || a.member.localeCompare(b.member)),
+    transfers: simplifyDebts(nets),
+  };
+}
+
+/** A group's members and its raw nets in one round trip. */
+async function membersAndNets(env: Env, groupId: string) {
+  const [members, raw] = await env.DB.batch<Record<string, unknown>>([membersQuery(env, groupId), rawNetsQuery(env, groupId)]);
+  return {
+    members: new Map((members.results as unknown as MemberRow[]).map((r) => [r.member_id, toMember(r)])),
+    raw: raw.results as unknown as { member_id: string; net: number }[],
+  };
 }
 
 export interface Balances {
@@ -858,24 +994,8 @@ export interface Balances {
 
 export async function balances(env: Env, groupId: string): Promise<Balances> {
   const group = await getGroup(env, groupId);
-  const members = await memberMap(env, groupId);
-  const raw = await rawNets(env, groupId);
-  const nets: Record<string, number> = {};
-  for (const [member, amount] of Object.entries(raw)) {
-    const owner = members.get(member)?.isGuest ? (members.get(member)?.sponsorId ?? member) : member;
-    nets[owner] = (nets[owner] ?? 0) + amount;
-  }
-  const total = Object.values(nets).reduce((acc, v) => acc + v, 0);
-  if (total !== 0) throw new Error(`ledger invariant broken for ${groupId}: nets add up to ${total}`);
-  return {
-    currency: group.currency,
-    minorUnit: group.minorUnit,
-    nets: Object.entries(nets)
-      .filter(([, v]) => v !== 0)
-      .map(([member, amount]) => ({ member, amount }))
-      .sort((a, b) => b.amount - a.amount || a.member.localeCompare(b.member)),
-    transfers: simplifyDebts(nets),
-  };
+  const { members, raw } = await membersAndNets(env, groupId);
+  return { currency: group.currency, minorUnit: group.minorUnit, ...settle(groupId, members, raw) };
 }
 
 /** What one person put in versus what was theirs to pay. Guests they sponsor count as theirs. */
@@ -1046,14 +1166,12 @@ export async function overview(env: Env, memberId: string, other?: string) {
   results.sort((a, b) => a.name.localeCompare(b.name));
   const groups = [];
   for (const g of results) {
-    const b = await balances(env, g.id);
+    const { members, raw } = await membersAndNets(env, g.id);
+    if (other && !members.has(other)) continue;
+    const b = settle(g.id, members, raw);
     const net = b.nets.find((n) => n.member === memberId)?.amount ?? 0;
     let withOther: number | undefined;
     if (other) {
-      const inGroup = await env.DB.prepare('SELECT 1 FROM ledger_members WHERE group_id = ? AND member_id = ?')
-        .bind(g.id, other)
-        .first();
-      if (!inGroup) continue;
       withOther = b.transfers.reduce(
         (acc, t) => acc + (t.from === other && t.to === memberId ? t.amount : t.from === memberId && t.to === other ? -t.amount : 0),
         0,
