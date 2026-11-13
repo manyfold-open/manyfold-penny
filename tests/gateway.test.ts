@@ -53,9 +53,22 @@ describe('parsing', () => {
     });
   });
 
-  it('ignores events that are not text messages', () => {
+  it('ignores events that are not text messages or photos', () => {
     expect(parseInbound({ type: 'm.reaction', room_id: '!a:x', event_id: '$e', sender: '@a:x', content: {} })).toBeNull();
-    expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.image', body: 'x.png' } })).toBeNull();
+    expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.file', body: 'x.pdf' } })).toBeNull();
+    expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.video', body: 'x.mp4' } })).toBeNull();
+  });
+
+  it('reads a photo, with or without a caption', () => {
+    expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.image', body: 'x.png' } })).toMatchObject({
+      kind: 'image',
+      text: 'x.png',
+    });
+    expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.image', body: '' } })).toMatchObject({
+      kind: 'image',
+      text: '',
+    });
+    expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.text', body: 'hi' } })).not.toHaveProperty('kind');
   });
 
   it('rejects a payload without room, event or sender', () => {
@@ -88,6 +101,13 @@ describe('the filter', () => {
     for (const text of ['好啊今天去哪吃', '明天 8 點集合', '晚餐要付現嗎', 'https://arena42.ai 看一下', 'pennyworth 是誰']) {
       expect(classify(msg(text), BOT), text).toBe('skip');
     }
+  });
+
+  it('passes on a photo, which may be a receipt', () => {
+    expect(classify(msg('IMG_1234.jpg', { kind: 'image' }), BOT)).toBe('photo');
+    expect(classify(msg('', { kind: 'image' }), BOT)).toBe('photo');
+    expect(classify(msg('@Penny 記這張', { kind: 'image' }), BOT)).toBe('called');
+    expect(classify(msg('x.png', { kind: 'image', senderId: BOT.matrixId }), BOT)).toBe('skip');
   });
 
   it('never calls Penny for her own messages, and always in a private chat', () => {

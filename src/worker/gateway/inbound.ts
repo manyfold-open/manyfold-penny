@@ -6,7 +6,8 @@
  *              content: { msgtype, body, "m.mentions": { user_ids } } },
  *     room_name, chat_type ("group" | "dm"), sender_name }
  *
- * Events that are not text messages (joins, reactions, encrypted events) give null.
+ * Text messages and photos (m.image) come through; other events (joins, reactions, files,
+ * encrypted events) give null.
  */
 
 export interface InboundMessage {
@@ -21,6 +22,9 @@ export interface InboundMessage {
   time: string;
   /** Matrix user ids the client marked as mentioned (m.mentions), if any. */
   mentions: string[];
+  /** 'image' for a photo, whose text is its caption or file name. Absent for text, so queue
+   *  items written before photos came through still read as text. */
+  kind?: 'image';
 }
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -43,7 +47,8 @@ export function parseInbound(raw: unknown): InboundMessage | null {
   const type = str(event.type);
   if (type && type !== 'm.room.message') return null;
   const msgtype = str(content.msgtype);
-  if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice') return null;
+  if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice' && msgtype !== 'm.image') return null;
+  const image = msgtype === 'm.image';
 
   const roomId = str(pick(event, 'room_id', 'roomId') ?? pick(outer, 'room_id', 'roomId'));
   const eventId = str(pick(event, 'event_id', 'eventId', 'message_id', 'messageId'));
@@ -52,7 +57,7 @@ export function parseInbound(raw: unknown): InboundMessage | null {
   if (!roomId.startsWith('!') || !eventId || !senderId.startsWith('@')) {
     throw new InboundError('A message needs room_id (!…), event_id and sender (@…).');
   }
-  if (!text.trim()) return null;
+  if (!text.trim() && !image) return null;
 
   const ts = pick(event, 'origin_server_ts', 'time', 'sent_at', 'received_at');
   const time =
@@ -72,5 +77,6 @@ export function parseInbound(raw: unknown): InboundMessage | null {
     text: text.slice(0, MAX_TEXT),
     time,
     mentions,
+    ...(image ? { kind: 'image' as const } : {}),
   };
 }
