@@ -108,7 +108,9 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
     if (item.attempts === 0) deps.timing?.('waitS', (startedAt - item.enqueuedAt) / 1000);
     try {
       // Someone talked to Penny directly: show that she is on it before her turn starts.
-      if (item.verdict === 'called' && !item.ackId && deps.ack) {
+      // Not for a reaction: a 👍 on a message with nothing pending gets no answer, and a note
+      // that is posted and then deleted shows up in the room as "Penny recalled a message".
+      if (item.verdict === 'called' && item.message.kind !== 'reaction' && !item.ackId && deps.ack) {
         try {
           const ackId = await deps.ack(item);
           if (ackId) {
