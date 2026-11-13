@@ -188,6 +188,10 @@ NarraPoller (Durable Object) reads new messages through Narra's agent-runtime ch
 - **One queue per room**: a group's messages are handled in order, while different groups
   run in parallel. Failed turns are retried, and the same message is never answered twice.
 - **A fresh context for every message**, so no session grows and no group sees another's.
+- **Replies and 👍 count.** Replying to one of Penny's messages, or putting 👍 / 👌 / ✅ on
+  it, reaches her with the message it answers, so "OK" on a proposal needs no @mention. The
+  poller remembers her last 30 messages per room to tell.
+- **No noise.** An empty answer (or a placeholder like "(empty response)") is never posted.
 - **Encrypted rooms are skipped.** Narra does not let agents into end-to-end encrypted chats,
   so a bookkeeping group must be a normal (unencrypted) chat.
 

@@ -48,6 +48,14 @@ export interface Sink {
 }
 
 const roomKey = (id: string) => `room:${id}`;
+const pennyKey = (id: string) => `penny:${id}`;
+/** How many of Penny's own messages per room the poller keeps, to match replies and reactions. */
+export const PENNY_REMEMBERS = 30;
+
+interface PennyMessage {
+  eventId: string;
+  text: string;
+}
 
 /** One step. Returns how long to wait before the next one. */
 export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.now()): Promise<number> {
@@ -82,8 +90,15 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
     } else {
       const { events, next } = await api.after(room.roomId, s.cursor);
       const names = await sink.botNames(room.roomId);
+      const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
       for (const event of events) {
-        if (event.sender === state.agentId) continue;
+        if (event.sender === state.agentId) {
+          // Remember Penny's own recent messages, so a reply or 👍 to one reaches her.
+          const body = typeof event.content?.body === 'string' ? event.content.body : '';
+          mine.push({ eventId: event.event_id, text: body.slice(0, 1000) });
+          if (mine.length > PENNY_REMEMBERS) mine.splice(0, mine.length - PENNY_REMEMBERS);
+          continue;
+        }
         let message: InboundMessage | null = null;
         try {
           message = parseInbound({
@@ -97,10 +112,15 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
           continue;
         }
         if (!message) continue;
+        if (message.replyTo) {
+          const hers = mine.find((m) => m.eventId === message.replyTo);
+          if (hers) message.replyToPenny = hers.text;
+        }
         s.lastActivity = now;
         const verdict = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
         if (verdict !== 'skip') await sink.deliver(message, verdict);
       }
+      await store.put(pennyKey(room.roomId), mine);
       if (next) s.cursor = next;
       s.nextPollAt = now + (now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS);
     }

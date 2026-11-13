@@ -71,6 +71,28 @@ describe('parsing', () => {
     expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.text', body: 'hi' } })).not.toHaveProperty('kind');
   });
 
+  it('reads a reply, without the quoted message', () => {
+    const m = parseInbound({
+      room_id: '!a:x',
+      event_id: '$r',
+      sender: '@mei:x',
+      content: { msgtype: 'm.text', body: '> <@penny:x> #21 晚餐 £120\n> 回 OK\n\n好', 'm.relates_to': { 'm.in_reply_to': { event_id: '$p' } } },
+    });
+    expect(m).toMatchObject({ text: '好', replyTo: '$p' });
+  });
+
+  it('reads a reaction as its emoji and the message it reacts to', () => {
+    const m = parseInbound({
+      type: 'm.reaction',
+      room_id: '!a:x',
+      event_id: '$k',
+      sender: '@mei:x',
+      content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$p', key: '👍' } },
+    });
+    expect(m).toMatchObject({ kind: 'reaction', text: '👍', replyTo: '$p' });
+    expect(parseInbound({ type: 'm.reaction', room_id: '!a:x', event_id: '$k', sender: '@mei:x', content: {} })).toBeNull();
+  });
+
   it('rejects a payload without room, event or sender', () => {
     expect(() => parseInbound({ text: 'hi' })).toThrow();
     expect(() => parseInbound('nope')).toThrow();
@@ -108,6 +130,16 @@ describe('the filter', () => {
     expect(classify(msg('', { kind: 'image' }), BOT)).toBe('photo');
     expect(classify(msg('@Penny 記這張', { kind: 'image' }), BOT)).toBe('called');
     expect(classify(msg('x.png', { kind: 'image', senderId: BOT.matrixId }), BOT)).toBe('skip');
+  });
+
+  it('calls Penny for a reply to her, and for a 👍 on her message only', () => {
+    expect(classify(msg('好', { replyTo: '$p', replyToPenny: '#21 晚餐' }), BOT)).toBe('called');
+    expect(classify(msg('好', { replyTo: '$x' }), BOT)).toBe('called');
+    expect(classify(msg('今晚吃什麼', { replyTo: '$x' }), BOT)).toBe('skip');
+    expect(classify(msg('👍', { kind: 'reaction', replyTo: '$p', replyToPenny: '#21 晚餐' }), BOT)).toBe('called');
+    expect(classify(msg('😂', { kind: 'reaction', replyTo: '$p', replyToPenny: '#21 晚餐' }), BOT)).toBe('skip');
+    expect(classify(msg('👍', { kind: 'reaction', replyTo: '$x' }), BOT)).toBe('skip');
+    expect(classify(msg('👍', { kind: 'reaction', replyTo: '$x', chatType: 'dm' }), BOT)).toBe('skip');
   });
 
   it('never calls Penny for her own messages, and always in a private chat', () => {
@@ -174,6 +206,15 @@ describe('the room queue', () => {
     const d = deps({ turn: async () => '' });
     await drain(store, d);
     expect(d.posted).toEqual([]);
+  });
+
+  it('never posts a placeholder for silence', async () => {
+    const store = new MemoryStore();
+    for (const text of ['a', 'b', 'c']) await enqueue(store, { message: msg(text), verdict: 'called', enqueuedAt: Date.now() });
+    const answers = ['(empty response)', 'No response requested.', '已入帳 #21'];
+    const d = deps({ turn: async () => answers.shift() ?? '' });
+    await drain(store, d);
+    expect(d.posted).toEqual(['已入帳 #21']);
   });
 
   it('holds the room and retries a failed turn, then gives up', async () => {
@@ -285,6 +326,35 @@ describe('the poller', () => {
     expect(delivered).toEqual([
       { text: '我剛付了晚餐 80', verdict: 'expense', name: 'Mei' },
       { text: '@小胖 誰欠誰', verdict: 'called', name: 'Mei' },
+    ]);
+  });
+
+  it('passes on replies and 👍 reactions to Penny with the message they answer', async () => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api } = fakeApi(pages);
+    const delivered: { text: string; verdict: string; replyToPenny?: string }[] = [];
+    const s: Sink = {
+      botNames: async () => [],
+      deliver: async (m, verdict) => {
+        delivered.push({ text: m.text, verdict, replyToPenny: m.replyToPenny });
+      },
+      log: () => undefined,
+    };
+    let now = 1_000_000;
+    await tick(store, api, s, now);
+    pages['!a:x'].push(
+      text('$p', '#21 晚餐 £120，回 OK 入帳', PENNY),
+      text('$q', '今晚吃什麼'),
+      { ...text('$r', '> <@agent> #21\n\n對'), content: { msgtype: 'm.text', body: '> <@agent> #21\n\n對', 'm.relates_to': { 'm.in_reply_to': { event_id: '$p' } } } },
+      { event_id: '$k', sender: '@ken:x', type: 'm.reaction', content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$p', key: '👍' } } },
+      { event_id: '$l', sender: '@ken:x', type: 'm.reaction', content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$q', key: '👍' } } },
+    );
+    now += ACTIVE_EVERY_MS;
+    await tick(store, api, s, now);
+    expect(delivered).toEqual([
+      { text: '對', verdict: 'called', replyToPenny: '#21 晚餐 £120，回 OK 入帳' },
+      { text: '👍', verdict: 'called', replyToPenny: '#21 晚餐 £120，回 OK 入帳' },
     ]);
   });
 

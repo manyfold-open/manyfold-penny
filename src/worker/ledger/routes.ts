@@ -26,6 +26,7 @@
  *   GET    /groups/:g/memory                  learned habits
  *   PUT    /groups/:g/memory/:key             remember one
  *   DELETE /groups/:g/memory/:key             forget one
+ *   POST   /groups/:g/share                   the group's read-only page link ({by, rotate?})
  *   PUT    /people/:m/payment-info            how someone likes to be paid
  *   GET    /people/:m/payment-info
  *   DELETE /people/:m/payment-info
@@ -36,6 +37,7 @@ import { Hono, type Context } from 'hono';
 import { safeEqual } from '../crypto';
 import { HttpError, type Env } from '../types';
 import * as store from './store';
+import { shareLink } from './share';
 
 type Ctx = Context<{ Bindings: Env }>;
 
@@ -198,5 +200,10 @@ ledger.delete('/people/:m/payment-info', async (c) => {
 ledger.get('/people/:m/overview', async (c) =>
   c.json(await store.overview(c.env, c.req.param('m') as string, c.req.query('with') || undefined)),
 );
+
+ledger.post('/groups/:g/share', async (c) => {
+  const b = await body(c);
+  return c.json(await shareLink(c.env, g(c), b.by as string, new URL(c.req.url).origin, b.rotate === true));
+});
 
 export default ledger;

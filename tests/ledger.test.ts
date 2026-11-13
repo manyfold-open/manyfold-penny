@@ -366,3 +366,38 @@ describe('many people at once', () => {
     expect(pending.filter((e: { seq: number }) => e.seq === seq)).toHaveLength(1);
   });
 });
+
+describe('share links', () => {
+  const page = (url: string) => app.fetch(new Request(url), env, ctx);
+
+  it('opens a read-only page for one group, and only that group', async () => {
+    const path = await newGroup('!share:matrix.example', [ZACK, MEI]);
+    await addConfirmed(path, { createdBy: ZACK, description: '<b>晚餐</b>', amount: 4000, paidBy: ZACK });
+    const first = await call('POST', `${path}/share`, { by: ZACK });
+    expect(first.status).toBe(200);
+    expect(first.json.url).toMatch(/^https:\/\/penny\.test\/share\/[\w-]+\.[\w-]{32}$/);
+    expect((await call('POST', `${path}/share`, { by: MEI })).json).toEqual({ url: first.json.url, created: false });
+
+    const response = await page(first.json.url);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    const html = await response.text();
+    expect(html).toContain('mei → zack');
+    expect(html).toContain('£20.00');
+    expect(html).toContain('&lt;b&gt;晚餐&lt;/b&gt;');
+    expect(html).not.toContain('<b>晚餐</b>');
+    expect(html).not.toContain('london');
+  });
+
+  it('refuses a forged or rotated link, and needs the ledger key to make one', async () => {
+    const path = await newGroup('!share2:matrix.example', [ZACK, MEI]);
+    const old = (await call('POST', `${path}/share`, { by: ZACK })).json.url as string;
+    const [id] = old.split('/share/')[1].split('.');
+    expect((await page(`https://penny.test/share/${id}.${'A'.repeat(32)}`)).status).toBe(404);
+    const fresh = (await call('POST', `${path}/share`, { by: ZACK, rotate: true })).json.url as string;
+    expect(fresh).not.toBe(old);
+    expect((await page(old)).status).toBe(404);
+    expect((await page(fresh)).status).toBe(200);
+    expect((await call('POST', `${path}/share`, { by: ZACK }, { key: null })).status).toBe(401);
+  });
+});

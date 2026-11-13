@@ -30,9 +30,16 @@ const AMOUNT = /(?:[£$€¥]|\b(?:gbp|usd|eur|jpy|twd|hkd|cny|rmb)\b)?\s*\d+(?:
 const MONEY_WORDS =
   /付|花了|花費|花费|買了|买了|請客|请客|出了|我出|墊|垫|轉給|转给|轉了|转了|還給|还给|還了|还了|欠|分帳|分账|平分|AA|收據|收据|發票|发票|paid|spent|owe|split|refund|venmo|transfer|[£$€¥]/i;
 
+// Reactions that mean "yes" to one of Penny's proposals.
+const APPROVE = new Set(['👍', '👍🏻', '👍🏼', '👍🏽', '👍🏾', '👍🏿', '👌', '✅', '✔️', '🆗']);
+
 export function classify(message: InboundMessage, bot: BotIdentity): Verdict {
   if (message.senderId === bot.matrixId) return 'skip';
+  // A reaction counts only as an OK to one of Penny's own messages.
+  if (message.kind === 'reaction') return message.replyToPenny !== undefined && APPROVE.has(message.text) ? 'called' : 'skip';
   if (message.chatType === 'dm') return 'called';
+  // Replying to Penny is talking to her, as Narra counts it for a mention.
+  if (message.replyToPenny !== undefined) return 'called';
 
   const text = message.text;
   const mentioned =
