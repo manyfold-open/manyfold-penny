@@ -17,6 +17,7 @@ import { pennyDeps } from './deps';
 import type { InboundMessage } from './inbound';
 import type { Verdict } from './filter';
 import { remember } from './poller';
+import { addSample, summarizeAll, type Samples } from './metrics';
 
 export interface QueuedMessage {
   message: InboundMessage;
@@ -47,6 +48,9 @@ export interface Deps {
   remove?(item: QueuedMessage, ackId: string): Promise<void>;
   /** Whether an error is worth another try. */
   retryable(error: unknown): boolean;
+  /** A timing sample in seconds: waitS (queued → turn starts), turnS (Penny's turn), answerS
+   *  (message sent → answer posted). */
+  timing?(name: 'waitS' | 'turnS' | 'answerS', seconds: number): void;
   log(line: string): void;
 }
 
@@ -100,6 +104,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       await store.delete(key);
       continue;
     }
+    const startedAt = Date.now();
+    if (item.attempts === 0) deps.timing?.('waitS', (startedAt - item.enqueuedAt) / 1000);
     try {
       // Someone talked to Penny directly: show that she is on it before her turn starts.
       if (item.verdict === 'called' && !item.ackId && deps.ack) {
@@ -113,7 +119,9 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
           deps.log(`could not post the note for ${item.message.eventId}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
+      const turnStarted = Date.now();
       const answer = await deps.turn(item);
+      deps.timing?.('turnS', (Date.now() - turnStarted) / 1000);
       const posted = Boolean(answer) && !isSilence(answer);
       if (posted && item.ackId && deps.patch) {
         try {
@@ -128,6 +136,7 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         await deps.remove(item, item.ackId).catch(() => undefined);
       }
       deps.log(`answered ${item.message.eventId} (${posted ? 'posted' : 'silent'})`);
+      if (posted) deps.timing?.('answerS', (Date.now() - Date.parse(item.message.time)) / 1000);
       await store.delete(key);
     } catch (error) {
       const attempts = item.attempts + 1;
@@ -173,7 +182,12 @@ export class RoomQueue {
   async fetch(request: Request): Promise<Response> {
     if (request.method === 'GET') {
       const queued = await this.state.storage.list({ prefix: 'q:', limit: 200 });
-      return Response.json({ queued: queued.size, alarm: await this.state.storage.getAlarm(), log: (await this.state.storage.get<string[]>('log')) ?? [] });
+      return Response.json({
+        queued: queued.size,
+        alarm: await this.state.storage.getAlarm(),
+        log: (await this.state.storage.get<string[]>('log')) ?? [],
+        metrics: summarizeAll(await this.state.storage.get<Samples>('metrics')),
+      });
     }
     const item = (await request.json()) as Omit<QueuedMessage, 'attempts'>;
     const result = await enqueue(this.store(), item);
@@ -186,14 +200,20 @@ export class RoomQueue {
   async alarm(): Promise<void> {
     const base = pennyDeps(this.env);
     const storage = this.state.storage;
+    // Log lines and timings are written in order, one after another, so none is lost.
+    let writes: Promise<void> = Promise.resolve();
+    const later = (write: () => Promise<void>) => {
+      writes = writes.then(write).catch(() => undefined);
+    };
     const delay = await drain(this.store(), {
       ...base,
       log: (line) => {
         base.log(line);
-        // Not awaited by drain's signature; the write is quick and ordered within this object.
-        void remember(storage, line);
+        later(() => remember(storage, line));
       },
+      timing: (name, seconds) => later(() => addSample(storage, name, seconds)),
     });
+    await writes;
     if (delay !== null) await this.state.storage.setAlarm(Date.now() + delay);
   }
 }
