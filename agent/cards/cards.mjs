@@ -172,14 +172,17 @@ export function receiptCard({ entry, members, minorUnit, lang }) {
 
 /* ───────── 3. the trip in review ───────── */
 
-export function posterCard({ groupName, stats, balances, members, botName = 'Penny', lang }) {
+/** `period` ({from?, to?}, YYYY-MM-DD) is the range the person asked about. When given, the
+ *  header and the day count follow it, so the card matches the text reply; otherwise they
+ *  span the first to the last day with an expense. */
+export function posterCard({ groupName, stats, balances, members, botName = 'Penny', lang, period = {} }) {
   const L = strings(lang);
   const name = nameOf(Object.fromEntries(members.map((m) => [m.id, m.name])));
   const fmt = moneyFormat(stats.currency, stats.minorUnit, [stats.total, stats.largest?.amount ?? 0]);
-  const days = stats.firstDay
-    ? Math.round((Date.parse(stats.lastDay) - Date.parse(stats.firstDay)) / 86_400_000) + 1
-    : 0;
-  const range = stats.firstDay ? (stats.firstDay === stats.lastDay ? md(L, stats.firstDay) : `${md(L, stats.firstDay)}–${md(L, stats.lastDay)}`) : '';
+  const first = period.from ?? stats.firstDay;
+  const last = period.to ?? stats.lastDay;
+  const days = first && last ? Math.round((Date.parse(last) - Date.parse(first)) / 86_400_000) + 1 : 0;
+  const range = first && last ? (first === last ? md(L, first) : `${md(L, first)}–${md(L, last)}`) : '';
 
   let body = '';
   body += t(20, 34, fit([groupName, range].filter(Boolean).join(' · '), 13, WIDTH - 40), { size: 13, weight: 500, fill: C.navyText });

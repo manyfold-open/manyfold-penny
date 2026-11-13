@@ -41,7 +41,13 @@ const fail = (code, message) => {
   process.exit(1);
 };
 
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
 async function build(kind, room, seq, flags) {
+  for (const name of ['from', 'to']) {
+    if (flags[name] !== undefined && !DAY.test(flags[name])) fail('invalid_argument', `--${name} must be YYYY-MM-DD.`);
+  }
+  if (flags.from && flags.to && flags.from > flags.to) fail('invalid_argument', '--from must not be after --to.');
   const lang = normalizeLang(flags.lang);
   const g = `/groups/${enc(room)}`;
   const { group, members } = await ledgerOrThrow('GET', g);
@@ -68,6 +74,7 @@ async function build(kind, room, seq, flags) {
         members,
         botName: group.botName,
         lang,
+        period: { from: flags.from, to: flags.to },
       });
     case 'categories':
       return categoriesCard({ groupName: group.name, stats: await stats(), lang });
