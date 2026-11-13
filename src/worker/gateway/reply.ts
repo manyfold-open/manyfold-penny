@@ -54,26 +54,44 @@ export class NarraError extends Error {
   }
 }
 
-/** Post Penny's answer into the room. txn_id is derived from the event, so a retry never posts twice. */
-export async function postToRoom(env: Env, roomId: string, text: string, eventId: string): Promise<void> {
+async function narraPost(env: Env, path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const token = (env.NARRA_AGENT_TOKEN ?? '').trim();
   if (!token) throw new NarraError('NARRA_AGENT_TOKEN is not set.', false);
   const endpoint = (env.NARRA_API_ENDPOINT ?? 'https://api.netmind.chat').replace(/\/+$/, '');
   let response: Response;
   try {
-    response = await fetch(`${endpoint}/api/agent-runtime/chat/send`, {
+    response = await fetch(`${endpoint}/api/agent-runtime/chat/${path}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ room_id: roomId, text, txn_id: await txnId(eventId) }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (error) {
     throw new NarraError(`Narra unreachable: ${safeErrorText(error instanceof Error ? error.message : error)}`, true);
   }
-  if (!response.ok) {
-    const detail = safeErrorText(await response.text());
-    throw new NarraError(`Narra send failed: HTTP ${response.status}${detail ? ` · ${detail}` : ''}`, response.status === 429 || response.status >= 500);
+  const parsed = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+  if (!response.ok || !parsed || parsed.status !== 'ok') {
+    const detail = safeErrorText(JSON.stringify(parsed?.issues ?? parsed ?? ''));
+    throw new NarraError(`Narra ${path} failed: HTTP ${response.status}${detail ? ` · ${detail}` : ''}`, response.status === 429 || response.status >= 500);
   }
+  return (parsed.data ?? {}) as Record<string, unknown>;
+}
+
+/** Post a message into the room and return its event id. txn_id is derived from `key`, so a
+ *  retry never posts twice. */
+export async function postToRoom(env: Env, roomId: string, text: string, key: string): Promise<string> {
+  const data = await narraPost(env, 'send', { room_id: roomId, text, txn_id: await txnId(key) });
+  return typeof data.event_id === 'string' ? data.event_id : '';
+}
+
+/** Replace the text of one of Penny's own messages (her "one moment" note becomes the answer). */
+export async function patchInRoom(env: Env, roomId: string, messageId: string, text: string, key: string): Promise<void> {
+  await narraPost(env, 'messages/patch', { room_id: roomId, message_id: messageId, content: text, txn_id: await txnId(key) });
+}
+
+/** Delete one of Penny's own messages (her "one moment" note, when she ends up saying nothing). */
+export async function deleteInRoom(env: Env, roomId: string, messageId: string, key: string): Promise<void> {
+  await narraPost(env, 'messages/delete', { room_id: roomId, message_id: messageId, txn_id: await txnId(key) });
 }
 
 async function digest(value: string): Promise<Uint8Array> {

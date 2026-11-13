@@ -191,6 +191,10 @@ NarraPoller (Durable Object) reads new messages through Narra's agent-runtime ch
 - **Replies and 👍 count.** Replying to one of Penny's messages, or putting 👍 / 👌 / ✅ on
   it, reaches her with the message it answers, so "OK" on a proposal needs no @mention. The
   poller remembers her last 30 messages per room to tell.
+- **No waiting in silence.** When someone talks to Penny directly, the gateway posts
+  "🐶 我看一下帳本…" as soon as her turn starts and edits that message into her answer when
+  it is ready (Narra's `messages/patch`). If she ends up saying nothing, the note is deleted;
+  if her turn fails for good, it says so.
 - **No noise.** An empty answer (or a placeholder like "(empty response)") is never posted.
 - **Encrypted rooms are skipped.** Narra does not let agents into end-to-end encrypted chats,
   so a bookkeeping group must be a normal (unencrypted) chat.
