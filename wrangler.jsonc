@@ -42,7 +42,11 @@
     // Manyfold API base. Point at https://api-staging.manyfold.ai via .dev.vars for local dev.
     "MANYFOLD_API_BASE_URL": "https://api.manyfold.ai",
     // "production" enforces https-only and no-private-IP checks on agent URLs.
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    // The Narra gateway (src/worker/gateway): on. It also needs the NARRA_AGENT_TOKEN secret,
+    // and the Manyfold Matrix channel switched off, or Penny answers twice.
+    "NARRA_GATEWAY": "poll",
+    "PENNY_AGENT_ID": "agt_agq5agsd2f4plp3442ipkm6isy"
   }
   // Optional hardening, neither is required to deploy:
   //   npx wrangler secret put ADMIN_PASSWORD          # locks the app behind a password
