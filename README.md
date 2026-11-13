@@ -181,7 +181,7 @@ NarraPoller (Durable Object) reads new messages through Narra's agent-runtime ch
 
 - **It reads, rather than waits for a webhook.** Narra only offers webhooks to agents that
   chose them when first bound, and only for @mentions. The poller reads one room per tick,
-  every 8 s for rooms with recent activity and every minute for quiet ones. That stays within
+  every 8 s for rooms with recent activity and every 20 s for quiet ones. That stays within
   Narra's 30 reads a minute per agent token, which Penny's own history reads share.
 - **The filter** drops chatter for free. Penny is called only for mentions, for answers to her
   proposals ("OK #21"), and for messages where someone says they spent or repaid money.

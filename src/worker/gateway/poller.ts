@@ -4,7 +4,7 @@
  * Narra only offers webhooks to agents that chose them when they were first bound, and
  * then only for @mentions, so the gateway reads instead: one Durable Object (NarraPoller)
  * wakes every few seconds and reads one room's new messages through the agent-runtime chat
- * API. Rooms with recent activity are read every few seconds, quiet ones once a minute.
+ * API. Rooms with recent activity are read every few seconds, quiet ones every 20 seconds.
  *
  * Narra allows 30 message reads a minute per agent token, and Penny's own history reads
  * use the same allowance, so the poller makes at most one read per tick and ticks no
@@ -23,7 +23,9 @@ import type { Store } from './queue';
 
 export const TICK_MS = 4_000;
 export const ACTIVE_EVERY_MS = 8_000;
-export const IDLE_EVERY_MS = 60_000;
+export const IDLE_EVERY_MS = 20_000;
+/** How long a room that Narra refused for good is left alone. */
+const REFUSED_FOR_MS = 5 * 60_000;
 const ACTIVE_FOR_MS = 15 * 60_000;
 const ROOMS_EVERY_MS = 5 * 60_000;
 const BACKOFF_MS = 30_000;
@@ -131,7 +133,7 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
     }
   } catch (error) {
     sink.log(`reading ${room.roomId} failed: ${(error as Error).message}`);
-    s.nextPollAt = now + (error instanceof NarraError && !error.retryable ? IDLE_EVERY_MS * 5 : BACKOFF_MS);
+    s.nextPollAt = now + (error instanceof NarraError && !error.retryable ? REFUSED_FOR_MS : BACKOFF_MS);
   }
   await store.put(roomKey(room.roomId), s);
   return TICK_MS;
