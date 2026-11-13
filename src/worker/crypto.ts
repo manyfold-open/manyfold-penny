@@ -77,6 +77,20 @@ async function aesKey(env: Env): Promise<CryptoKey> {
   return key;
 }
 
+const macCache = new Map<string, CryptoKey>();
+
+/** HMAC-SHA256 of `message` under this deployment's key material, base64url, for signed links. */
+export async function sign(env: Env, message: string): Promise<string> {
+  const material = await keyMaterial(env);
+  let key = macCache.get(material);
+  if (!key) {
+    key = await crypto.subtle.importKey('raw', enc.encode(`penny-share:${material}`), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    macCache.set(material, key);
+  }
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(message)));
+  return toB64(mac).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 export interface Sealed {
   ciphertext: string;
   iv: string;

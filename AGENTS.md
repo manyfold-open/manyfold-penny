@@ -45,7 +45,10 @@ The template is designed to be extended and reshaped; these are the load-bearing
    and `/api/state` without a reason as good as theirs. The one exception is `/api/ledger/*`:
    the Penny agent calls it, not a browser, so it skips the Origin check and the admin password
    and requires `Authorization: Bearer <PENNY_API_KEY>` instead (`src/worker/ledger/routes.ts`).
-   Without that secret the ledger answers 503, never an open ledger.
+   Without that secret the ledger answers 503, never an open ledger. `GET /share/<token>` sits
+   outside `/api/` and shows one group's ledger read-only: the token is a random link id plus
+   its HMAC (`sign` in `src/worker/crypto.ts`), Penny makes and rotates it through
+   `/api/ledger/groups/:g/share`, and a revoked or forged token gets a 404 (`src/worker/ledger/share.ts`).
 8. **The ledger is append-only and group-scoped.** Every ledger query names its group id.
    Money changes are proposed, then confirmed; edits and deletions add a version and never
    overwrite one. Amounts are integer minor units, split only through `ledger/money.ts`.

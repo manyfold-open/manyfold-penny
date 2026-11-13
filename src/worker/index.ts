@@ -40,6 +40,7 @@ import {
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import ledger, { concurrentChange } from './ledger/routes';
+import { groupForToken, sharePage } from './ledger/share';
 import { gatewayEnabled } from './gateway/poller';
 
 export { RoomQueue } from './gateway/queue';
@@ -186,6 +187,22 @@ app.route('/api/ledger', ledger);
 
 app.all('/api/*', () => {
   throw new HttpError(404, 'not_found', 'No such API route.');
+});
+
+// A group's read-only ledger page, from the link Penny posts in the chat (ledger/share.ts).
+// Outside /api on purpose: the signed link is the credential, not the admin password.
+app.get('/share/:token', async (c) => {
+  await ensureSchema(c.env.DB);
+  const headers = {
+    'content-type': 'text/html; charset=utf-8',
+    'cache-control': 'no-store',
+    'referrer-policy': 'no-referrer',
+    'x-robots-tag': 'noindex',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  };
+  const groupId = await groupForToken(c.env, c.req.param('token'));
+  if (!groupId) return new Response('<!doctype html><meta charset="utf-8"><p>這個連結無效或已更換，請在群組裡跟 Penny 要新的連結。</p>', { status: 404, headers });
+  return new Response(await sharePage(c.env, groupId), { headers });
 });
 
 // Anything else that reaches the Worker is a static asset (or the SPA fallback).

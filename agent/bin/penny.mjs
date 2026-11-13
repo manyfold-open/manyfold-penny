@@ -34,6 +34,7 @@ Reading
   stats <room> [--from 2026-11-06] [--to 2026-11-09]
   list <room> [--limit 5] [--before <seq>]
   entry <room> <seq>
+  share <room> --by <member> [--rotate]           the group's read-only page link
 
 Memory and people
   memory <room>                                   list learned habits
@@ -152,6 +153,8 @@ async function main() {
     }
     case 'entry':
       return request('GET', `${room()}/entries/${seq()}`);
+    case 'share':
+      return request('POST', `${room()}/share`, { by: by(), rotate: flags.rotate === true });
     case 'memory':
       return request('GET', `${room()}/memory`);
     case 'remember':

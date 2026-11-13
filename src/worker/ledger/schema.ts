@@ -116,4 +116,16 @@ CREATE TABLE IF NOT EXISTS ledger_payment_info (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ledger_members_member ON ledger_members (member_id);
+
+-- Read-only share links to one group's ledger page. The link carries link_id and an HMAC of
+-- it, so this table alone never lets anyone open a page. At most one active link per group.
+CREATE TABLE IF NOT EXISTS ledger_share_links (
+  link_id    TEXT PRIMARY KEY,
+  group_id   TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_share_links_group ON ledger_share_links (group_id, revoked_at);
 `;

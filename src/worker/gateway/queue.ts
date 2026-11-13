@@ -49,6 +49,10 @@ const MAX_QUEUE = 200;
 
 const pad = (n: number) => String(n).padStart(16, '0');
 
+/** Answers that mean "say nothing". Posting them would only put noise in the chat. */
+const SILENCE = /^\s*(?:\(empty response\)|no response(?: requested)?\.?|\[no reply\]|\.{0,3})\s*$/i;
+export const isSilence = (answer: string) => SILENCE.test(answer);
+
 /** Add a message unless this event was seen already (Narra may deliver twice). */
 export async function enqueue(store: Store, item: Omit<QueuedMessage, 'attempts'>): Promise<'queued' | 'duplicate' | 'full'> {
   const seenKey = `seen:${item.message.eventId}`;
@@ -79,7 +83,7 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
     }
     try {
       const answer = await deps.turn(item);
-      if (answer) await deps.post(item, answer);
+      if (answer && !isSilence(answer)) await deps.post(item, answer);
       await store.delete(key);
     } catch (error) {
       const attempts = item.attempts + 1;
