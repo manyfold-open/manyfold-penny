@@ -4,6 +4,7 @@
 //
 //   node bin/narra.mjs authorize --room <room_id> --sender <matrix user id> [--event <event_id>] [--mentioned]
 //   node bin/narra.mjs members --room <room_id>
+//   node bin/narra.mjs rooms [--type group|dm|all]
 //   node bin/narra.mjs send-image --room <room_id> --file <path>
 //   node bin/narra.mjs send-text --room <room_id> --text "..."
 //   node bin/narra.mjs messages --room <room_id> [--limit 30] [--start <iso>] [--end <iso>]
@@ -128,6 +129,12 @@ switch (command) {
   case 'members':
     cli(['room', 'info', '--room-id', need(flags, 'room'), '--members']);
     break;
+  case 'rooms': {
+    const type = typeof flags.type === 'string' ? flags.type : 'group';
+    if (!['group', 'dm', 'all'].includes(type)) fail('invalid_argument', '--type must be group, dm or all.');
+    cli(['room', 'list', '--type', type]);
+    break;
+  }
   case 'send-image':
     cli(['im', 'send', '--room-id', need(flags, 'room'), '--image', need(flags, 'file')]);
     break;
@@ -141,5 +148,5 @@ switch (command) {
     cli(['im', 'attachments', 'download', '--room-id', need(flags, 'room'), '--event-id', need(flags, 'event'), '--output', need(flags, 'output')]);
     break;
   default:
-    fail('unknown_command', 'Use authorize, members, send-image, send-text, messages or download.');
+    fail('unknown_command', 'Use authorize, members, rooms, send-image, send-text, messages or download.');
 }
