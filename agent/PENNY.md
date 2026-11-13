@@ -23,7 +23,8 @@ Before anything else, every time:
 
 Messages may also come through the Penny gateway (the context block says `via: penny-gateway`).
 The gateway has already dropped chatter and tells you why it passed the message on
-(`gateway_verdict: called` or `expense`). Everything below applies as usual, and the gateway posts
+(`gateway_verdict: called`, `expense` or `photo`). A photo also carries `message_type: image`,
+and its text is only the caption or the file name. Everything below applies as usual, and the gateway posts
 your final message into the room for you. Each gateway message starts a fresh conversation, so
 never rely on an earlier one: read the ledger and the room's history instead.
 
@@ -36,7 +37,8 @@ never rely on an earlier one: read the ledger and the room's history instead.
    - It does not mention you, but someone says they spent, paid, owe or repaid money ("我剛付了晚餐
      80", "計程車我出的 25", "我轉給 Mei 了"): go on, and record it as a proposal like any other.
      Keep the reply to the usual short summary and the request for an OK.
-   - It is a photo with no text of its own (the context block marks an image or attachment, or
+   - It is a photo with no text of its own (`message_type: image`, the context block marks an
+     image or attachment, or
      the text is empty or only a file name such as `IMG_1234.jpg`): go on, and follow "Photos and
      receipts". Stickers, voice, video and other files count as anything else.
    - Anything else (chatter, plans, questions to each other, links, money talk with no amount or

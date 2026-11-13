@@ -8,7 +8,7 @@
 
 import type { InboundMessage } from './inbound';
 
-export type Verdict = 'called' | 'expense' | 'skip';
+export type Verdict = 'called' | 'expense' | 'photo' | 'skip';
 
 export interface BotIdentity {
   /** Penny's Matrix user id, e.g. @agent-54ebea3a:matrix.netmind.chat */
@@ -40,6 +40,9 @@ export function classify(message: InboundMessage, bot: BotIdentity): Verdict {
     text.includes(bot.matrixId) ||
     bot.names.some((name) => name && new RegExp(`@?${escape(name)}(?![\\p{L}\\p{N}])`, 'iu').test(text));
   if (mentioned) return 'called';
+
+  // A photo may be a receipt. Only Penny can look at it, so pass it on.
+  if (message.kind === 'image') return 'photo';
 
   if (ANSWER.test(text) || CHANGE.test(text) || (ENTRY_REF.test(text) && text.length <= 20)) return 'called';
 
