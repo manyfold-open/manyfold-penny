@@ -51,7 +51,8 @@ async function newGroup(room: string, members = [ZACK, MEI, KEN, RAY]) {
   return path;
 }
 
-async function addConfirmed(path: string, expense: Record<string, unknown>, confirmer = MEI) {
+// Someone other than the proposer OKs it, as the ledger requires.
+async function addConfirmed(path: string, expense: Record<string, unknown>, confirmer = expense.createdBy === MEI ? ZACK : MEI) {
   const proposed = await call('POST', `${path}/expenses`, expense);
   expect(proposed.status).toBe(201);
   const seq = proposed.json.entry.seq;

@@ -2,7 +2,7 @@
  * Group use cases, edge cases and stress, run against the real routes on in-memory SQLite.
  * Every test asserts the behaviour we WANT; a failure here is a finding, not a flaky test.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import app from '../src/worker/index';
 import { FakeD1 } from './support/fake-d1';
 import { classify } from '../src/worker/gateway/filter';
@@ -450,5 +450,108 @@ describe('filter: everyday group messages', () => {
 
   it.each(['哈哈哈 2 次', 'the power went out at 9', '明天 10 點見', '3 個人要來嗎'])('skips "%s"', (text) => {
     expect(classify(m(text), BOT)).toBe('skip');
+  });
+});
+
+/* ───────── follow-ups: numerals, time zones, who may OK ───────── */
+
+describe('filter: amounts in Chinese numerals', () => {
+  const BOT = { matrixId: '@agent-1:x', names: ['Penny'] };
+  const m = (text: string): InboundMessage => ({
+    roomId: '!r:x',
+    roomName: '',
+    chatType: 'group',
+    eventId: `$cn-${text}`,
+    senderId: '@zack:x',
+    senderName: 'Zack',
+    text,
+    time: '2026-11-13T00:00:00.000Z',
+    mentions: [],
+  });
+
+  it.each(['晚餐三百我付', '我出了一千二', '計程車兩百五我墊的', '飲料五十塊我付', '停車十塊我出'])('passes "%s" on', (text) => {
+    expect(classify(m(text), BOT)).toBe('expense');
+  });
+
+  it.each(['我們一起付吧', '三個人去百貨', '付錢的時候叫我', '十點集合'])('skips "%s"', (text) => {
+    expect(classify(m(text), BOT)).toBe('skip');
+  });
+});
+
+describe('dates in the group\'s own time zone', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('a TWD group records a 1:30 a.m. Taipei expense on the Taipei date, and says what today is', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-13T17:30:00Z')); // 01:30 on the 14th in Taipei
+    const g = await group(['a', 'b'], 'TWD');
+    const info = (await call('GET', g)).json;
+    expect(info.group.timezone).toBe('Asia/Taipei');
+    expect(info.today).toBe('2026-11-14');
+    const p = await call('POST', `${g}/expenses`, { createdBy: id('a'), paidBy: id('a'), amount: 300 });
+    expect(p.json.entry.spentOn).toBe('2026-11-14');
+  });
+
+  it('takes an explicit time zone and refuses a made-up one', async () => {
+    const g = await group(['a', 'b'], 'USD');
+    expect((await call('GET', g)).json.group.timezone).toBe('UTC');
+    expect((await call('PUT', g, { timezone: 'America/Los_Angeles' })).json.group.timezone).toBe('America/Los_Angeles');
+    expect((await call('PUT', g, { timezone: 'Mars/Olympus' })).status).toBe(400);
+  });
+});
+
+describe('who may OK a change', () => {
+  it('the proposer cannot OK their own entry', async () => {
+    const g = await group(['a', 'b', 'c']);
+    const p = await call('POST', `${g}/expenses`, { createdBy: id('a'), paidBy: id('a'), amount: 300 });
+    const r = await call('POST', `${g}/entries/${p.json.entry.seq}/confirm`, { by: id('a') });
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('someone_else_must_confirm');
+  });
+
+  it('a debt put on one person must be OK\'d by that person, not a bystander', async () => {
+    const g = await group(['a', 'b', 'c']);
+    // a says they advanced 10000 for b alone.
+    const p = await call('POST', `${g}/expenses`, {
+      createdBy: id('a'),
+      paidBy: id('a'),
+      amount: 10000,
+      split: { method: 'equal', members: [id('b')] },
+    });
+    const seq = p.json.entry.seq;
+    const r = await call('POST', `${g}/entries/${seq}/confirm`, { by: id('c') });
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe('involved_must_confirm');
+    expect((await call('POST', `${g}/entries/${seq}/confirm`, { by: id('b') })).status).toBe(200);
+  });
+
+  it('a guest\'s share is OK\'d by their sponsor, and a deletion by someone on the old version', async () => {
+    const g = await group(['a', 'b', 'c']);
+    const guest = (await call('POST', `${g}/guests`, { name: 'G', sponsorId: id('c') })).json.guest.id;
+    const p = await call('POST', `${g}/expenses`, {
+      createdBy: id('a'),
+      paidBy: id('a'),
+      amount: 500,
+      split: { method: 'equal', members: [guest] },
+    });
+    expect((await call('POST', `${g}/entries/${p.json.entry.seq}/confirm`, { by: id('b') })).status).toBe(403);
+    expect((await call('POST', `${g}/entries/${p.json.entry.seq}/confirm`, { by: id('c') })).status).toBe(200);
+    await call('POST', `${g}/expenses/${p.json.entry.seq}/delete`, { createdBy: id('a') });
+    expect((await call('POST', `${g}/entries/${p.json.entry.seq}/confirm`, { by: id('b') })).status).toBe(403);
+    expect((await call('POST', `${g}/entries/${p.json.entry.seq}/confirm`, { by: id('c') })).status).toBe(200);
+  });
+
+  it('when only the proposer is on it, anyone else may OK; a group of one OKs its own', async () => {
+    const g = await group(['a', 'b']);
+    const p = await call('POST', `${g}/expenses`, {
+      createdBy: id('a'),
+      paidBy: id('a'),
+      amount: 500,
+      split: { method: 'equal', members: [id('a')] },
+    });
+    expect((await call('POST', `${g}/entries/${p.json.entry.seq}/confirm`, { by: id('b') })).status).toBe(200);
+    const solo = await group(['solo']);
+    const q = await call('POST', `${solo}/expenses`, { createdBy: id('solo'), paidBy: id('solo'), amount: 100 });
+    expect((await call('POST', `${solo}/entries/${q.json.entry.seq}/confirm`, { by: id('solo') })).status).toBe(200);
   });
 });

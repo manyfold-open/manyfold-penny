@@ -33,6 +33,12 @@ const ENTRY_REF = /#\d+/;
 
 // A number, and a word for spending or moving money. Both must be there.
 const AMOUNT = /(?:[£$€¥]|\b(?:gbp|usd|eur|jpy|twd|hkd|cny|rmb)\b)?\s*\d+(?:[.,]\d+)?\s*(?:元|塊|块|镑|鎊|英鎊|英镑|刀|pounds?|quid|bucks?|k)?/i;
+// The same in Chinese numerals: 三百, 一千二, 兩百五, 五十塊, 十塊. A numeral needs a unit after it
+// (十, 百, 千, 萬 or 元/塊), so 一起, 三個人 and 百貨 are not amounts.
+const CN_DIGIT = '[一二三四五六七八九兩两]';
+const CN_AMOUNT = new RegExp(
+  `${CN_DIGIT}[十百千萬万]|十${CN_DIGIT}?\\s*(?:元|塊|块)|[一二三四五六七八九十兩两]\\s*(?:元|塊|块|镑|鎊|英鎊|英镑|刀)`,
+);
 const MONEY_WORDS =
   /付|花了|花費|花费|買了|买了|請客|请客|出了|我出|墊|垫|轉給|转给|轉了|转了|還給|还给|還了|还了|欠|分帳|分账|平分|AA|收據|收据|發票|发票|paid|spent|\bowe[sd]?\b|split|refund|venmo|transfer|[£$€¥]/i;
 
@@ -63,7 +69,7 @@ export function classify(message: InboundMessage, bot: BotIdentity): Verdict {
   const bare = bareEmoji(text);
   if (ANSWER.test(bare) || CHANGE.test(bare) || (ENTRY_REF.test(text) && text.length <= 20)) return 'called';
 
-  const digits = /\d/.test(text) && AMOUNT.test(text);
+  const digits = (/\d/.test(text) && AMOUNT.test(text)) || CN_AMOUNT.test(text);
   if (digits && MONEY_WORDS.test(text)) return 'expense';
 
   return 'skip';

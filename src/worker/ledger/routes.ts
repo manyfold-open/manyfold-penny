@@ -91,7 +91,8 @@ ledger.put('/groups/:g', async (c) => c.json({ group: await store.upsertGroup(c.
 
 ledger.get('/groups/:g', async (c) => {
   const group = await store.getGroup(c.env, g(c));
-  return c.json({ group, members: await store.listMembers(c.env, group.id) });
+  // today is the group's date in its own time zone, so Penny never works out "this week" from UTC.
+  return c.json({ group, today: store.today(group.timezone), members: await store.listMembers(c.env, group.id) });
 });
 
 ledger.put('/groups/:g/members', async (c) => {

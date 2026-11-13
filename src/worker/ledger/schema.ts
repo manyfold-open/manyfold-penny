@@ -128,4 +128,12 @@ CREATE TABLE IF NOT EXISTS ledger_share_links (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ledger_share_links_group ON ledger_share_links (group_id, revoked_at);
+
+-- Settings added after ledger_groups was created, kept beside it since there is no migration.
+-- timezone is an IANA name: "today" and dates without one are read in the group's own time.
+CREATE TABLE IF NOT EXISTS ledger_group_prefs (
+  group_id   TEXT PRIMARY KEY,
+  timezone   TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;

@@ -12,7 +12,7 @@ const HELP = `penny <command> ...
 
 Group and members
   group <room>                                   settings and members
-  setup <room> --currency GBP [--name N] [--bot-name N] [--default-split JSON|null]
+  setup <room> --currency GBP [--name N] [--bot-name N] [--default-split JSON|null] [--timezone Asia/Taipei]
   members <room> --json '[{"id":"@zack:x","name":"Zack"}]' [--complete]
   guest <room> --name An --sponsor <member>
 
@@ -110,6 +110,7 @@ async function main() {
       if (flags.name) settings.name = flags.name;
       if (flags['bot-name']) settings.botName = flags['bot-name'];
       if (flags['default-split']) settings.defaultSplit = json(flags['default-split'], '--default-split');
+      if (flags.timezone) settings.timezone = flags.timezone;
       return request('PUT', room(), settings);
     }
     case 'members':
