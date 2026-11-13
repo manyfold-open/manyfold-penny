@@ -20,6 +20,7 @@ import { parseInbound, type InboundMessage } from './inbound';
 import { narraApi, type NarraApi, type NarraRoom } from './narra-api';
 import { NarraError } from './reply';
 import type { Store } from './queue';
+import { addSample, summarizeAll, type Samples } from './metrics';
 
 export const TICK_MS = 4_000;
 export const ACTIVE_EVERY_MS = 8_000;
@@ -47,6 +48,8 @@ export interface Sink {
   botNames(roomId: string): Promise<string[]>;
   deliver(message: InboundMessage, verdict: Verdict): Promise<void>;
   log(line: string): void;
+  /** Seconds from a message being sent to the gateway reading it. */
+  readLag?(seconds: number): void;
 }
 
 const roomKey = (id: string) => `room:${id}`;
@@ -129,6 +132,7 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
         const verdict = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
         if (verdict !== 'skip') {
           await sink.deliver(message, verdict);
+          sink.readLag?.((now - Date.parse(message.time)) / 1000);
           sink.log(`queued ${message.eventId} in ${room.roomId} (${verdict})`);
         }
       }
@@ -207,6 +211,9 @@ export class NarraPoller {
         agentId: rooms?.agentId ?? null,
         rooms: perRoom,
         log: (await this.state.storage.get<string[]>('log')) ?? [],
+        metrics: summarizeAll(await this.state.storage.get<Samples>('metrics')),
+        /** Worst wait before a quiet room is read, from the room count: one read every TICK_MS. */
+        worstQuietReadS: Math.max(IDLE_EVERY_MS, (rooms?.rooms.length ?? 0) * TICK_MS) / 1000,
       });
     }
     if (!gatewayEnabled(this.env)) {
@@ -220,6 +227,11 @@ export class NarraPoller {
   async alarm(): Promise<void> {
     if (!gatewayEnabled(this.env)) return;
     const env = this.env;
+    const storage = this.state.storage;
+    let writes: Promise<void> = Promise.resolve();
+    const later = (write: () => Promise<void>) => {
+      writes = writes.then(write).catch(() => undefined);
+    };
     const delay = await tick(this.store(), narraApi(env), {
       async botNames(roomId) {
         const row = await env.DB.prepare('SELECT bot_name FROM ledger_groups WHERE id = ?').bind(roomId).first<{ bot_name: string }>();
@@ -232,11 +244,13 @@ export class NarraPoller {
           body: JSON.stringify({ message, verdict, enqueuedAt: Date.now() }),
         });
       },
-      log: async (line) => {
+      log: (line) => {
         console.log(`[poller] ${line}`);
-        await remember(this.state.storage, line);
+        later(() => remember(storage, line));
       },
+      readLag: (seconds) => later(() => addSample(storage, 'readLagS', seconds)),
     });
+    await writes;
     await this.state.storage.put('lastTick', Date.now());
     await this.state.storage.setAlarm(Date.now() + delay);
   }

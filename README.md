@@ -196,6 +196,10 @@ NarraPoller (Durable Object) reads new messages through Narra's agent-runtime ch
   it is ready (Narra's `messages/patch`). If she ends up saying nothing, the note is deleted;
   if her turn fails for good, it says so.
 - **No noise.** An empty answer (or a placeholder like "(empty response)") is never posted.
+- **Capacity.** One read every 4 s is shared by every room, so a quiet room waits about
+  `max(20 s, rooms × 4 s)`. `npm run simulate` runs the real poller against 5 to 200 simulated
+  rooms and prints the waits; `GET /api/gateway/status` shows the live ones (read delay, queue
+  wait, Penny's turn, time to answer, as p50/p95/max seconds).
 - **Encrypted rooms are skipped.** Narra does not let agents into end-to-end encrypted chats,
   so a bookkeeping group must be a normal (unencrypted) chat.
 

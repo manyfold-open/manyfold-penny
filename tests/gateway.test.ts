@@ -256,6 +256,22 @@ describe('the room queue', () => {
     expect(d.posted).toEqual(['已入帳 #21']);
   });
 
+  it('times the wait, the turn and the whole answer', async () => {
+    const store = new MemoryStore();
+    const sent = new Date(Date.now() - 40_000).toISOString();
+    await enqueue(store, { message: msg('@Penny 誰欠誰', { time: sent }), verdict: 'called', enqueuedAt: Date.now() - 10_000 });
+    const timings: Record<string, number> = {};
+    const d = deps({
+      timing: (name, s) => {
+        timings[name] = s;
+      },
+    });
+    await drain(store, d);
+    expect(timings.waitS).toBeGreaterThanOrEqual(10);
+    expect(timings.turnS).toBeGreaterThanOrEqual(0);
+    expect(timings.answerS).toBeGreaterThanOrEqual(40);
+  });
+
   it('writes the note in the speaker\'s script', () => {
     expect(noteText({ message: msg('how much did we spend') }, 'working')).toBe('🐶 One moment, checking…');
     expect(noteText({ message: msg('这周花了多少') }, 'working')).toBe('🐶 我看一下账本…');
