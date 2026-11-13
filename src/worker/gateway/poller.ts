@@ -96,9 +96,15 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
       const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
       for (const event of events) {
         if (event.sender === state.agentId) {
-          // Remember Penny's own recent messages, so a reply or 👍 to one reaches her.
-          const body = typeof event.content?.body === 'string' ? event.content.body : '';
-          mine.push({ eventId: event.event_id, text: body.slice(0, 1000) });
+          // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
+          // (her "one moment" note turned into the answer) updates the message it replaces.
+          const relates = (event.content?.['m.relates_to'] ?? {}) as Record<string, unknown>;
+          const replaced = relates.rel_type === 'm.replace' && typeof relates.event_id === 'string' ? relates.event_id : null;
+          const newContent = (event.content?.['m.new_content'] ?? {}) as Record<string, unknown>;
+          const body = typeof (replaced ? newContent.body : event.content?.body) === 'string' ? String(replaced ? newContent.body : event.content?.body) : '';
+          const earlier = replaced ? mine.find((m) => m.eventId === replaced) : undefined;
+          if (earlier) earlier.text = body.slice(0, 1000);
+          else mine.push({ eventId: replaced ?? event.event_id, text: body.slice(0, 1000) });
           if (mine.length > PENNY_REMEMBERS) mine.splice(0, mine.length - PENNY_REMEMBERS);
           continue;
         }

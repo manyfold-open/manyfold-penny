@@ -23,6 +23,8 @@ export interface QueuedMessage {
   verdict: Verdict;
   attempts: number;
   enqueuedAt: number;
+  /** Event id of Penny's "one moment" note for this message, once it is posted. */
+  ackId?: string;
 }
 
 export interface Store {
@@ -37,6 +39,12 @@ export interface Deps {
   turn(item: QueuedMessage): Promise<string>;
   /** Post an answer into the room. */
   post(item: QueuedMessage, text: string): Promise<void>;
+  /** Post a short "one moment" note at once, so nobody waits in silence. Returns its event id. */
+  ack?(item: QueuedMessage): Promise<string>;
+  /** Turn the note into the answer. */
+  patch?(item: QueuedMessage, ackId: string, text: string): Promise<void>;
+  /** Remove the note when Penny says nothing. */
+  remove?(item: QueuedMessage, ackId: string): Promise<void>;
   /** Whether an error is worth another try. */
   retryable(error: unknown): boolean;
   log(line: string): void;
@@ -53,6 +61,16 @@ const pad = (n: number) => String(n).padStart(16, '0');
 /** Answers that mean "say nothing". Posting them would only put noise in the chat. */
 const SILENCE = /^\s*(?:\(empty response\)|no response(?: requested)?\.?|\[no reply\]|\.{0,3})\s*$/i;
 export const isSilence = (answer: string) => SILENCE.test(answer);
+
+/** Penny's "one moment" note, and what it becomes if her turn fails for good. In the
+ *  speaker's script when the message shows it; Chinese otherwise. */
+export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' | 'failed'): string {
+  const text = item.message.text;
+  const english = /[a-z]{3}/i.test(text) && !/[\u3400-\u9fff]/.test(text);
+  const simplified = /[这们说帐账还么为]/.test(text);
+  if (kind === 'working') return english ? '🐶 One moment, checking…' : simplified ? '🐶 我看一下账本…' : '🐶 我看一下帳本…';
+  return english ? '🐶 Sorry, I got stuck on that one. Please try again.' : simplified ? '🐶 刚刚卡住了，请再说一次。' : '🐶 剛剛卡住了，請再說一次。';
+}
 
 /** Add a message unless this event was seen already (Narra may deliver twice). */
 export async function enqueue(store: Store, item: Omit<QueuedMessage, 'attempts'>): Promise<'queued' | 'duplicate' | 'full'> {
@@ -83,9 +101,32 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       continue;
     }
     try {
+      // Someone talked to Penny directly: show that she is on it before her turn starts.
+      if (item.verdict === 'called' && !item.ackId && deps.ack) {
+        try {
+          const ackId = await deps.ack(item);
+          if (ackId) {
+            item.ackId = ackId;
+            await store.put(key, item);
+          }
+        } catch (error) {
+          deps.log(`could not post the note for ${item.message.eventId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       const answer = await deps.turn(item);
       const posted = Boolean(answer) && !isSilence(answer);
-      if (posted) await deps.post(item, answer);
+      if (posted && item.ackId && deps.patch) {
+        try {
+          await deps.patch(item, item.ackId, answer);
+        } catch (error) {
+          deps.log(`could not edit the note for ${item.message.eventId}, posting instead: ${error instanceof Error ? error.message : String(error)}`);
+          await deps.post(item, answer);
+        }
+      } else if (posted) {
+        await deps.post(item, answer);
+      } else if (item.ackId && deps.remove) {
+        await deps.remove(item, item.ackId).catch(() => undefined);
+      }
       deps.log(`answered ${item.message.eventId} (${posted ? 'posted' : 'silent'})`);
       await store.delete(key);
     } catch (error) {
@@ -93,6 +134,9 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       const message = error instanceof Error ? error.message : String(error);
       if (attempts >= MAX_ATTEMPTS || !deps.retryable(error)) {
         deps.log(`gave up on ${item.message.eventId} after ${attempts} attempt(s): ${message}`);
+        if (item.ackId && deps.patch) {
+          await deps.patch(item, item.ackId, noteText(item, 'failed')).catch(() => undefined);
+        }
         await store.delete(key);
         continue;
       }

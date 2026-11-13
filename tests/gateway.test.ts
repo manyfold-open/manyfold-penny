@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { classify } from '../src/worker/gateway/filter';
 import { parseInbound, type InboundMessage } from '../src/worker/gateway/inbound';
-import { drain, enqueue, MAX_ATTEMPTS, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
+import { drain, enqueue, MAX_ATTEMPTS, noteText, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
 import { txnId } from '../src/worker/gateway/reply';
 import { tick, TICK_MS, ACTIVE_EVERY_MS, type Sink } from '../src/worker/gateway/poller';
 import type { NarraApi, NarraEvent } from '../src/worker/gateway/narra-api';
@@ -217,6 +217,51 @@ describe('the room queue', () => {
     expect(d.posted).toEqual(['已入帳 #21']);
   });
 
+  it('posts a note at once for a direct message, then turns it into the answer', async () => {
+    const store = new MemoryStore();
+    await enqueue(store, { message: msg('@Penny 誰欠誰'), verdict: 'called', enqueuedAt: Date.now() });
+    await enqueue(store, { message: msg('我剛付了 8 塊停車'), verdict: 'expense', enqueuedAt: Date.now() });
+    const calls: string[] = [];
+    const d = deps({
+      ack: async (item) => {
+        calls.push(`ack ${noteText(item, 'working')}`);
+        return '$note';
+      },
+      patch: async (_item, id, text) => {
+        calls.push(`patch ${id} ${text}`);
+      },
+    });
+    await drain(store, d);
+    expect(calls).toEqual(['ack 🐶 我看一下帳本…', 'patch $note re: @Penny 誰欠誰']);
+    expect(d.posted).toEqual(['re: 我剛付了 8 塊停車']);
+  });
+
+  it('removes the note when Penny stays silent, and falls back to posting if the edit fails', async () => {
+    const store = new MemoryStore();
+    for (const t of ['👍', 'OK']) await enqueue(store, { message: msg(t), verdict: 'called', enqueuedAt: Date.now() });
+    const removed: string[] = [];
+    const answers = ['', '已入帳 #21'];
+    const d = deps({
+      turn: async () => answers.shift() ?? '',
+      ack: async (item) => `$note-${item.message.text}`,
+      remove: async (_item, id) => {
+        removed.push(id);
+      },
+      patch: async () => {
+        throw new Error('edit refused');
+      },
+    });
+    await drain(store, d);
+    expect(removed).toEqual(['$note-👍']);
+    expect(d.posted).toEqual(['已入帳 #21']);
+  });
+
+  it('writes the note in the speaker\'s script', () => {
+    expect(noteText({ message: msg('how much did we spend') }, 'working')).toBe('🐶 One moment, checking…');
+    expect(noteText({ message: msg('这周花了多少') }, 'working')).toBe('🐶 我看一下账本…');
+    expect(noteText({ message: msg('這週花了多少') }, 'failed')).toBe('🐶 剛剛卡住了，請再說一次。');
+  });
+
   it('holds the room and retries a failed turn, then gives up', async () => {
     const store = new MemoryStore();
     await enqueue(store, { message: msg('first'), verdict: 'called', enqueuedAt: Date.now() });
@@ -348,6 +393,9 @@ describe('the poller', () => {
       text('$q', '今晚吃什麼'),
       { ...text('$r', '> <@agent> #21\n\n對'), content: { msgtype: 'm.text', body: '> <@agent> #21\n\n對', 'm.relates_to': { 'm.in_reply_to': { event_id: '$p' } } } },
       { event_id: '$k', sender: '@ken:x', type: 'm.reaction', content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$p', key: '👍' } } },
+      text('$n', '🐶 我看一下帳本…', PENNY),
+      { event_id: '$e', sender: PENNY, type: 'm.room.message', content: { msgtype: 'm.text', body: '* #22 午餐 £20', 'm.new_content': { msgtype: 'm.text', body: '#22 午餐 £20' }, 'm.relates_to': { rel_type: 'm.replace', event_id: '$n' } } },
+      { event_id: '$m', sender: '@ken:x', type: 'm.reaction', content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$n', key: '👍' } } },
       { event_id: '$l', sender: '@ken:x', type: 'm.reaction', content: { 'm.relates_to': { rel_type: 'm.annotation', event_id: '$q', key: '👍' } } },
     );
     now += ACTIVE_EVERY_MS;
@@ -355,6 +403,7 @@ describe('the poller', () => {
     expect(delivered).toEqual([
       { text: '對', verdict: 'called', replyToPenny: '#21 晚餐 £120，回 OK 入帳' },
       { text: '👍', verdict: 'called', replyToPenny: '#21 晚餐 £120，回 OK 入帳' },
+      { text: '👍', verdict: 'called', replyToPenny: '#22 午餐 £20' },
     ]);
   });
 
