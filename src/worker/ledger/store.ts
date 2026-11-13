@@ -119,7 +119,9 @@ function text(value: unknown, max: number, field: string): string {
 
 function day(value: unknown): string {
   if (value === undefined || value === null || value === '') return new Date().toISOString().slice(0, 10);
-  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) {
+  // Date.parse accepts 2026-02-30 (it rolls over to March), so check the date reads back the same.
+  const real = (v: string) => !Number.isNaN(Date.parse(v)) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) || !real(value)) {
     invalid('invalid_field', 'spentOn must be a date like 2026-11-06.');
   }
   return value as string;
@@ -239,8 +241,13 @@ export async function upsertGroup(env: Env, groupId: string, settings: GroupSett
   }
 
   if (settings.currency !== undefined && currencyCode(settings.currency) !== existing.currency) {
-    const used = await env.DB.prepare('SELECT 1 FROM ledger_expenses WHERE group_id = ? LIMIT 1').bind(groupId).first();
-    if (used) conflict('currency_locked', 'The currency cannot change once the group has expenses.');
+    const used = await env.DB.prepare(
+      `SELECT 1 FROM ledger_expenses WHERE group_id = ?1
+       UNION ALL SELECT 1 FROM ledger_settlements WHERE group_id = ?1 LIMIT 1`,
+    )
+      .bind(groupId)
+      .first();
+    if (used) conflict('currency_locked', 'The currency cannot change once the group has expenses or repayments.');
   }
 
   const sets: string[] = [];
@@ -453,8 +460,10 @@ export async function listExpenses(
   options: { limit?: number; before?: number },
 ): Promise<{ entries: Entry[]; total: number; more: boolean }> {
   await getGroup(env, groupId);
-  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 5), 1), 20);
-  const before = options.before && options.before > 0 ? Math.trunc(options.before) : Number.MAX_SAFE_INTEGER;
+  // ?limit=abc arrives as NaN, which SQLite refuses to bind: fall back to the defaults.
+  const finite = (n: number | undefined): n is number => typeof n === 'number' && Number.isFinite(n);
+  const limit = Math.min(Math.max(Math.trunc(finite(options.limit) ? options.limit : 5), 1), 20);
+  const before = finite(options.before) && options.before > 0 ? Math.trunc(options.before) : Number.MAX_SAFE_INTEGER;
   const entries = await expenseRows(
     env,
     `group_id = ? AND status = 'active' AND seq < ? ORDER BY seq DESC LIMIT ?`,
@@ -510,7 +519,35 @@ interface Resolved {
   receiptRef: string | null;
 }
 
-function resolveExpense(group: Group, members: Map<string, Member>, input: ExpenseInput): Resolved {
+/**
+ * The group's default split, minus anyone who has left. Equal and shares splits just drop
+ * them. Percent, exact and receipt splits cannot be rescaled safely, so once someone in them
+ * has left they give way to an equal split among everyone still here.
+ */
+function defaultSplitFor(group: Group, members: Map<string, Member>, everyone: string[]): SplitSpec {
+  const spec = group.defaultSplit;
+  const here = (id: string) => members.get(id)?.active === true;
+  if (!spec) return { method: 'equal', members: everyone };
+  if (spec.method === 'equal') {
+    const kept = (spec.members ?? []).filter(here);
+    if (kept.length === 0) return { method: 'equal', members: everyone };
+    const adjustments = Object.fromEntries(Object.entries(spec.adjustments ?? {}).filter(([m]) => here(m)));
+    return { method: 'equal', members: kept, ...(Object.keys(adjustments).length > 0 ? { adjustments } : {}) };
+  }
+  if (spec.method === 'shares') {
+    const kept = Object.entries(spec.shares ?? {}).filter(([m, w]) => here(m) && w > 0);
+    return kept.length > 0 ? { method: 'shares', shares: Object.fromEntries(kept) } : { method: 'equal', members: everyone };
+  }
+  const named =
+    spec.method === 'percent' ? Object.keys(spec.percents ?? {}) : spec.method === 'exact' ? Object.keys(spec.amounts ?? {}) : spec.everyone ?? [];
+  return named.every(here) ? spec : { method: 'equal', members: everyone };
+}
+
+/**
+ * `keep` lists people who have left but may still appear: on an edit, everyone already on
+ * the entry being changed, so fixing an old typo never fails because someone left the chat.
+ */
+function resolveExpense(group: Group, members: Map<string, Member>, input: ExpenseInput, keep: Set<string> = new Set()): Resolved {
   const amount = assertAmount(input.amount, 'amount');
   const kind = input.kind ?? 'expense';
   if (kind !== 'expense' && kind !== 'refund') invalid('invalid_field', 'kind must be expense or refund.');
@@ -525,14 +562,17 @@ function resolveExpense(group: Group, members: Map<string, Member>, input: Expen
   } else {
     return invalid('invalid_field', 'Say who paid: paidBy or payers.');
   }
-  for (const payer of payers) requireActor(members, payer.member, 'Every payer');
+  for (const payer of payers) {
+    if (!keep.has(payer.member)) requireActor(members, payer.member, 'Every payer');
+    else if (!members.has(payer.member)) invalid('invalid_member', 'Every payer must be a member of the group.');
+  }
 
   const everyone = [...members.values()].filter((m) => m.active && !m.isGuest).map((m) => m.id);
-  const split = input.split ?? group.defaultSplit ?? { method: 'equal', members: everyone };
+  const split = input.split ?? defaultSplitFor(group, members, everyone);
   const shares = computeShares(amount, split);
   for (const member of Object.keys(shares)) {
     const found = members.get(member);
-    if (!found || !found.active) invalid('invalid_member', `${member} is not an active member of this group.`);
+    if (!found || (!found.active && !keep.has(member))) invalid('invalid_member', `${member} is not an active member of this group.`);
   }
 
   return {
@@ -661,7 +701,8 @@ export async function proposeEdit(
     split: changes.split ?? (JSON.parse(raw!.split) as SplitSpec),
     receiptRef: changes.receiptRef === undefined ? before.receiptRef : changes.receiptRef,
   };
-  const data = resolveExpense(group, members, merged);
+  const already = new Set([...before.payers, ...before.shares].map((l) => l.member));
+  const data = resolveExpense(group, members, merged, already);
   const id = crypto.randomUUID();
   await env.DB.batch(
     insertExpense(env, group, { id, seq, version: current.version + 1, kind: data.kind, createdBy, replacesId: current.id }, data),
@@ -951,7 +992,8 @@ export async function putMemory(env: Env, groupId: string, key: string, value: u
 }
 
 export async function deleteMemory(env: Env, groupId: string, key: string): Promise<void> {
-  const result = await env.DB.prepare('DELETE FROM ledger_memory WHERE group_id = ? AND key = ?').bind(groupId, key).run();
+  const k = typeof key === 'string' ? key.trim() : '';
+  const result = await env.DB.prepare('DELETE FROM ledger_memory WHERE group_id = ? AND key = ?').bind(groupId, k).run();
   if (result.meta.changes === 0) notFound('memory_not_found', 'There is no memory with that key.');
 }
 
@@ -982,19 +1024,25 @@ export async function deletePaymentInfo(env: Env, memberId: string): Promise<voi
 
 /* ───────── across groups ───────── */
 
+export const OVERVIEW_LIMIT = 50;
+
 /**
  * One person's position in every group they belong to. With `other`, also what the two of
  * them owe each other, taken from each group's settle-up plan. Meant for private messages:
  * the caller must only show it to `memberId` themself.
  */
 export async function overview(env: Env, memberId: string, other?: string) {
+  // Each group costs a few queries, and a Worker invocation has a query budget, so at most
+  // OVERVIEW_LIMIT groups are read: the most recently active ones. `more` counts the rest.
   const { results } = await env.DB.prepare(
     `SELECT g.id, g.name, g.currency, g.minor_unit FROM ledger_members m JOIN ledger_groups g ON g.id = m.group_id
-      WHERE m.member_id = ? AND m.is_guest = 0 ORDER BY g.name`,
+      WHERE m.member_id = ? AND m.is_guest = 0 ORDER BY g.updated_at DESC, g.id`,
   )
     .bind(memberId)
     .all<{ id: string; name: string; currency: string; minor_unit: number }>();
-  if (results.length > 50) results.length = 50;
+  const more = Math.max(results.length - OVERVIEW_LIMIT, 0);
+  results.length = Math.min(results.length, OVERVIEW_LIMIT);
+  results.sort((a, b) => a.name.localeCompare(b.name));
   const groups = [];
   for (const g of results) {
     const b = await balances(env, g.id);
@@ -1012,5 +1060,5 @@ export async function overview(env: Env, memberId: string, other?: string) {
     }
     groups.push({ id: g.id, name: g.name, currency: g.currency, minorUnit: g.minor_unit, net, withOther });
   }
-  return { member: memberId, other: other ?? null, groups };
+  return { member: memberId, other: other ?? null, groups, more };
 }
