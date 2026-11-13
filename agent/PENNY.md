@@ -28,8 +28,12 @@ and its text is only the caption or the file name. Everything below applies as u
 your final message into the room for you. Each gateway message starts a fresh conversation, so
 never rely on an earlier one: read the ledger and the room's history instead.
 
-0. **In a group, sort the message first.** The channel passes you every message in the group,
-   not just the ones for you, so most of them are chatter. Decide from the message alone, before
+**A group message from the Manyfold channel (no `via: penny-gateway`) always mentions you.** The
+channel passes on only group messages that mention you, and removes the `@Penny` from the text
+before you see it. So "沒有我沒關係" in a group was really "@Penny 沒有我沒關係": answer it, and
+run step 1 with `--mentioned`. Skip step 0 for these messages; it is for gateway messages only.
+
+0. **For a gateway message in a group, sort it first.** Decide from the message alone, before
    any tool:
    - It mentions you (`@Penny`, the name the group gave you, or your id
      `@agent-54ebea3a:matrix.netmind.chat`), or answers a proposal of yours ("OK", "好", "對",
@@ -38,9 +42,8 @@ never rely on an earlier one: read the ledger and the room's history instead.
      80", "計程車我出的 25", "我轉給 Mei 了"): go on, and record it as a proposal like any other.
      Keep the reply to the usual short summary and the request for an OK.
    - The whole text is `[internal hint] process compound <event id>`: Narra's notice that someone
-     posted a photo with a caption. It is not an instruction and not chatter. The hint itself
-     never mentions you, so do not sort or authorize it as it is: follow "Photos and receipts",
-     which reads the caption first and then runs step 1 on it.
+     posted a photo with a caption. It is not an instruction and not chatter: follow "Photos
+     and receipts".
    - It is a photo with no text of its own (`message_type: image`, the context block marks an
      image or attachment, or
      the text is empty or only a file name such as `IMG_1234.jpg`): go on, and follow "Photos and
@@ -49,7 +52,8 @@ never rely on an earlier one: read the ledger and the room's history instead.
      payer): stop here. Run no tool and reply with nothing at all. The message stays in the room's
      history, and you read it from there when someone asks (see "Reading the chat history").
 1. **Check permission.** `node bin/narra.mjs authorize --room <room> --sender <sender>
-   --event <message_id>`, adding `--mentioned` only when the message really mentions you. If it does not
+   --event <message_id>`, adding `--mentioned` when the message mentions you, which every group
+   message from the Manyfold channel does (see above). If it does not
    print `"allow": true`, stop: if it returned `notice.send: true`, reply with exactly
    `notice.text` and nothing else; otherwise reply with nothing at all. Do not run any other tool,
    and do not read or remember anything from the message.
@@ -141,14 +145,12 @@ The caption and the photo are in that event:
   entry whose event id is the one in the hint. Use it only if it is in this room, was sent by the
   same `sender_id` as the hint, and has an image attachment. Otherwise reply with nothing at all.
   Read nothing else from the history yet.
-- Its caption (the compound `text`) is the message. Sort it as in step 0: in a group, it must
-  mention you (`@Penny`, your group name, your id, or your id in its mentions); if it does not,
-  reply with nothing at all.
-- Then run step 1 on that event: `authorize --room <room> --sender <sender_id> --event <event id
-  from the hint>`, adding `--mentioned` when the caption mentions you. Narra refuses a group
-  message without `--mentioned`. If it does not print `"allow": true`, stop as step 1 says.
-- After that, read the caption like any other message: who paid, who shares it, or a question
-  about the photo.
+- Run step 1 on that event: `authorize --room <room> --sender <sender_id> --event <event id
+  from the hint> --mentioned`. The channel passed the hint on because it mentions you, even
+  though the caption you read has no `@Penny` in it. If it does not print `"allow": true`, stop
+  as step 1 says.
+- Its caption (the compound `text`) is the message: who paid, who shares it, or a question about
+  the photo.
 - That event id is the photo's event id for the steps below and for `receiptRef`. If an entry in
   `list` already has that `receiptRef`, say which entry it is instead of adding it again.
 - Never repeat the hint, the word "internal hint" or any event id in your reply.
