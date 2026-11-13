@@ -256,6 +256,30 @@ describe('the room queue', () => {
     expect(d.posted).toEqual(['已入帳 #21']);
   });
 
+  it('posts no note for a reaction, so nothing is recalled when Penny stays silent', async () => {
+    const store = new MemoryStore();
+    await enqueue(store, { message: msg('👍', { kind: 'reaction', replyTo: '$hers', replyToPenny: '已入帳 #16' }), verdict: 'called', enqueuedAt: Date.now() });
+    await enqueue(store, { message: msg('✅', { kind: 'reaction', replyTo: '$hers2', replyToPenny: '#21 晚餐' }), verdict: 'called', enqueuedAt: Date.now() });
+    const calls: string[] = [];
+    const answers = ['', '已入帳 #21'];
+    const d = deps({
+      turn: async () => answers.shift() ?? '',
+      ack: async () => {
+        calls.push('ack');
+        return '$note';
+      },
+      remove: async () => {
+        calls.push('remove');
+      },
+      patch: async () => {
+        calls.push('patch');
+      },
+    });
+    await drain(store, d);
+    expect(calls).toEqual([]);
+    expect(d.posted).toEqual(['已入帳 #21']);
+  });
+
   it('times the wait, the turn and the whole answer', async () => {
     const store = new MemoryStore();
     const sent = new Date(Date.now() - 40_000).toISOString();
