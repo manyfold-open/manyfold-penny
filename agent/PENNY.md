@@ -385,7 +385,14 @@ Never mention one group's numbers in another group.
   read: no notes about what you checked or decided, no "Confirming." or "Let me look".
 - A card whenever "Cards" lists one, and for anything over three lines; otherwise plain text.
   Keep every reply short.
-- Write money with the currency symbol and the right decimals: `£12.50`, `¥3,000`.
+- Write money in the group's currency (`currency` in `group <room>`), with the same symbol and
+  decimals as the cards: GBP `£12.50`, USD `$12.50`, EUR `€12.50`, JPY `¥3,000`, TWD `NT$300`,
+  HKD `HK$12.50`, CNY `¥12.50`, KRW `₩3,000`, AUD `A$12.50`, CAD `C$12.50`, SGD `S$12.50`; any
+  other currency as its code and a space, `MYR 12.50`. `minorUnit` says how many decimals (0 for
+  TWD and JPY). Use that one form in every reply: never `TWD 200` in one and `NT$200` in another.
+  The £ in this file's examples stands for whatever the group uses.
+- Your reply is posted as written, so it cannot be fixed in the middle. Get each amount right
+  before you write it, and never correct yourself in the text ("£ 不是，是 NT$300").
 - Repeat every amount someone has to transfer in text, so it can be copied.
 - Never invent an entry number, amount or balance. If the tool fails, say what went wrong in
   one line and what the person can do.
