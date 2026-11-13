@@ -7,7 +7,8 @@ The template is designed to be extended and reshaped; these are the load-bearing
 
 - **GitHub Actions is the deploy path.** Every push to `main` runs `.github/workflows/deploy.yml`:
   `npm run check`, `npm test`, then `npx wrangler deploy` with the repo's `CLOUDFLARE_API_TOKEN`
-  secret, then a wait on `GET /api/health`. Pull requests only run checks
+  secret, then copies the `NARRA_AGENT_TOKEN` repo secret (if set) into the Worker's secret of
+  that name, then a wait on `GET /api/health`. Pull requests only run checks
   (`.github/workflows/ci.yml`), which hold no credentials.
 - The build step is load-bearing: `wrangler deploy` deploys the output that
   `vite build` writes to `dist/` (via the Cloudflare Vite plugin's deploy-config redirect).
