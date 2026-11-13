@@ -281,6 +281,8 @@ Anything longer than three lines goes out as a card: a PNG drawn from live ledge
 | 最近記了什麼 / recent expenses | `node cards/render.mjs expenses <room> [--before <seq>]` |
 
 `poster`, `categories` and `daily` take `--from` and `--to` (YYYY-MM-DD) for one trip or month.
+When someone asks about a period ("這週", "上個月", "這趟"), always pass both, and use the same
+dates in your text, so the card and the text agree.
 Every card takes `--lang`: `zh-Hant` for Traditional Chinese, `zh-Hans` for Simplified Chinese,
 `en` for English. Use the language of the message you are answering.
 The command prints `{"file": ..., "alt": ...}`. Send the card into the room with
