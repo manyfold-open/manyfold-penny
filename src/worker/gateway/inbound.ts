@@ -33,6 +33,8 @@ export interface InboundMessage {
   replyToPenny?: string;
   /** Set only on a nudge the gateway made up (verdict 'nudge'): why Penny should speak. */
   nudge?: 'pending' | 'welcome';
+  /** Set by the poller when other Narra agents are in the group. */
+  crowded?: boolean;
 }
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');

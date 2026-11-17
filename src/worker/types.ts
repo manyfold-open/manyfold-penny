@@ -33,6 +33,10 @@ export interface Env {
   NARRA_API_ENDPOINT?: string;
   /** Penny's agent id among the agents connected to this Worker (the agents table). */
   PENNY_AGENT_ID?: string;
+  /** "on" also reads Narra in real time through Matrix /sync (gateway/sync.ts). */
+  NARRA_SYNC?: string;
+  /** The single /sync reader (Durable Object MatrixSync). */
+  MATRIX_SYNC?: DurableObjectNamespace;
 }
 
 /** Everything needed to talk to one agent over A2A. */

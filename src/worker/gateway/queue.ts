@@ -113,6 +113,13 @@ const NOTES: Record<Intent, Record<Script, string[]>> = {
   },
 };
 
+// For small talk in a group with other agents: Penny still needs a note there (see wantsNote).
+const HELLO: Record<Script, string[]> = {
+  hant: ['🐶 在～', '🐶 嗨～'],
+  hans: ['🐶 在～', '🐶 嗨～'],
+  en: ['🐶 Hi!', '🐶 Here!'],
+};
+
 const FAILED: Record<Script, string> = {
   hant: '🐶 剛剛卡住了，請再說一次。',
   hans: '🐶 刚刚卡住了，请再说一次。',
@@ -151,6 +158,17 @@ export function intentOf(item: Pick<QueuedMessage, 'message'>): Intent | 'chat' 
   return 'other';
 }
 
+/**
+ * Whether Penny posts a note before her turn: when someone talked to her directly. Also for an
+ * expense in a group with other Narra agents: they answer within seconds, and Narra refuses a
+ * 7th agent message after the latest human one, but never an edit. The note goes out at once,
+ * before the others' answers, and her answer then replaces it as an edit.
+ */
+export function wantsNote(item: Pick<QueuedMessage, 'message' | 'verdict'>): boolean {
+  if (item.message.kind === 'reaction') return false;
+  return item.verdict === 'called' || (item.message.crowded === true && item.verdict === 'expense');
+}
+
 /** Same message, same pick: a retried note never changes its words. */
 function pick<T>(list: T[], seed: string): T {
   let h = 0;
@@ -167,7 +185,7 @@ export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' |
   const script = scriptOf(item.message.text);
   if (kind === 'failed') return FAILED[script];
   const intent = intentOf(item);
-  if (intent === 'chat') return null;
+  if (intent === 'chat') return item.message.crowded ? pick(HELLO[script], item.message.eventId) : null;
   return pick(NOTES[intent][script], item.message.eventId);
 }
 
@@ -206,7 +224,7 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       // Not for a reaction: a 👍 on a message with nothing pending gets no answer, and a note
       // that is posted and then deleted shows up in the room as "Penny recalled a message".
       // Not for small talk either: nobody says "let me check" before answering a "hi".
-      if (item.verdict === 'called' && item.message.kind !== 'reaction' && !item.ackId && item.answer === undefined && deps.ack && noteText(item, 'working')) {
+      if (wantsNote(item) && !item.ackId && item.answer === undefined && deps.ack && noteText(item, 'working')) {
         try {
           const ackId = await deps.ack(item);
           if (ackId) {

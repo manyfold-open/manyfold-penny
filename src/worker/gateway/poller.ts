@@ -17,7 +17,7 @@
 import type { Env } from '../types';
 import { classify, isNarraAgent, type Verdict } from './filter';
 import { parseInbound, type InboundMessage } from './inbound';
-import { narraApi, type NarraApi, type NarraRoom } from './narra-api';
+import { narraApi, type NarraApi, type NarraEvent, type NarraRoom } from './narra-api';
 import { NarraError } from './reply';
 import type { Store } from './queue';
 import { addSample, summarizeAll, type Samples } from './metrics';
@@ -30,6 +30,10 @@ const REFUSED_FOR_MS = 5 * 60_000;
 const ACTIVE_FOR_MS = 15 * 60_000;
 const ROOMS_EVERY_MS = 5 * 60_000;
 const BACKOFF_MS = 30_000;
+/** While /sync has reported within this long, it is the main reader... */
+export const SYNC_FRESH_MS = 90_000;
+/** ...and each room is read only this often, to catch what /sync may hold back. */
+export const BACKSTOP_EVERY_MS = 60_000;
 /** An entry waiting this long for its OK gets one reminder, the next time someone talks. */
 export const PENDING_STALE_MS = 3 * 60 * 60_000;
 /** At most one reminder per room in this long. */
@@ -116,6 +120,122 @@ interface PennyMessage {
   text: string;
 }
 
+const handledKey = (id: string) => `handled:${id}`;
+/** Event ids per room already handled, so a message that both /sync and the backstop read is
+ *  handled once. Comfortably more than one read returns (50). */
+const HANDLED_REMEMBERS = 300;
+
+/**
+ * Handle new events of one room, from either reader: remember Penny's own messages, sort the
+ * rest, queue what Penny should answer, and remind of waiting OKs. Returns whether anyone
+ * other than Penny wrote something.
+ */
+export async function handleEvents(
+  store: Store,
+  sink: Sink,
+  room: NarraRoom,
+  agentId: string,
+  events: NarraEvent[],
+  now: number,
+): Promise<boolean> {
+  const handled = (await store.get<string[]>(handledKey(room.roomId))) ?? [];
+  const fresh = events.filter((e) => e.event_id && !handled.includes(e.event_id));
+  if (fresh.length === 0) return false;
+  await store.put(handledKey(room.roomId), [...handled, ...fresh.map((e) => e.event_id)].slice(-HANDLED_REMEMBERS));
+
+  const names = await sink.botNames(room.roomId);
+  const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
+  // Other Narra agents in the room. With them around, Narra refuses a 7th agent message in a row
+  // (see queue.ts), so Penny posts her note at once to hold her place.
+  const crowded = room.type === 'group' && Object.keys(room.names).some((id) => id !== agentId && isNarraAgent(id));
+  // Whether a person spoke without asking Penny anything, and whether Penny already has
+  // something to answer here: a reminder is only for the first case without the second.
+  let personSpoke = false;
+  let answering = false;
+  let activity = false;
+  for (const event of fresh) {
+    if (event.sender === agentId) {
+      // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
+      // (her "one moment" note turned into the answer) updates the message it replaces.
+      const relates = (event.content?.['m.relates_to'] ?? {}) as Record<string, unknown>;
+      const replaced = relates.rel_type === 'm.replace' && typeof relates.event_id === 'string' ? relates.event_id : null;
+      const newContent = (event.content?.['m.new_content'] ?? {}) as Record<string, unknown>;
+      const body = typeof (replaced ? newContent.body : event.content?.body) === 'string' ? String(replaced ? newContent.body : event.content?.body) : '';
+      const earlier = mine.find((m) => m.eventId === (replaced ?? event.event_id));
+      if (earlier) earlier.text = body.slice(0, 1000);
+      else mine.push({ eventId: replaced ?? event.event_id, text: body.slice(0, 1000) });
+      if (mine.length > PENNY_REMEMBERS) mine.splice(0, mine.length - PENNY_REMEMBERS);
+      continue;
+    }
+    let message: InboundMessage | null = null;
+    try {
+      message = parseInbound({
+        // Neither reader puts room_id on each event; it is the room they were read from.
+        event: { ...event, room_id: room.roomId },
+        room_name: room.title,
+        chat_type: room.type,
+        sender_name: room.names[event.sender] ?? '',
+      });
+    } catch {
+      continue;
+    }
+    if (!message) continue;
+    activity = true;
+    if (crowded) message.crowded = true;
+    if (message.replyTo) {
+      const hers = mine.find((m) => m.eventId === message.replyTo);
+      if (hers) message.replyToPenny = hers.text;
+    }
+    const classified = classify(message, { matrixId: agentId, names: ['Penny', ...names] });
+    // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
+    const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
+    if (verdict === 'skip' && message.chatType === 'group' && message.kind !== 'reaction' && !isNarraAgent(message.senderId)) {
+      personSpoke = true;
+    }
+    if (verdict !== 'skip') {
+      answering = true;
+      await sink.deliver(message, verdict);
+      sink.readLag?.((now - Date.parse(message.time)) / 1000);
+      sink.log(`queued ${message.eventId} in ${room.roomId} (${verdict})`);
+    }
+  }
+  await store.put(pennyKey(room.roomId), mine);
+  if (personSpoke && !answering && room.type === 'group') await remindPending(store, sink, room, now);
+  return activity;
+}
+
+/** How long until a room is read again. While /sync is delivering, reading is only a backstop. */
+async function nextReadIn(store: Store, s: RoomState, now: number): Promise<number> {
+  const syncAt = (await store.get<number>('syncAt')) ?? 0;
+  if (now - syncAt < SYNC_FRESH_MS) return BACKSTOP_EVERY_MS;
+  return now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS;
+}
+
+export interface SyncedRoom {
+  roomId: string;
+  events: NarraEvent[];
+  /** /sync left events out (a gap): the backstop reads the room right away. */
+  limited?: boolean;
+}
+
+/**
+ * New events from Matrix /sync (see sync.ts). Rooms the poller has not started yet are left
+ * to it: it starts each room from "now" and welcomes new groups.
+ */
+export async function ingest(store: Store, sink: Sink, rooms: SyncedRoom[], now = Date.now()): Promise<void> {
+  await store.put('syncAt', now);
+  const state = await store.get<RoomsState>('rooms');
+  if (!state) return;
+  for (const synced of rooms) {
+    const room = state.rooms.find((r) => r.roomId === synced.roomId);
+    const s = await store.get<RoomState>(roomKey(synced.roomId));
+    if (!room || !s?.cursor) continue;
+    if (await handleEvents(store, sink, room, state.agentId, synced.events, now)) s.lastActivity = now;
+    if (synced.limited) s.nextPollAt = now;
+    await store.put(roomKey(synced.roomId), s);
+  }
+}
+
 /** One step. Returns how long to wait before the next one. */
 export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.now()): Promise<number> {
   let state = await store.get<RoomsState>('rooms');
@@ -156,62 +276,10 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
       }
     } else {
       const { events, next } = await api.after(room.roomId, s.cursor);
-      const names = await sink.botNames(room.roomId);
-      const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
-      // Whether a person spoke without asking Penny anything, and whether Penny already has
-      // something to answer here: a reminder is only for the first case without the second.
-      let personSpoke = false;
-      let answering = false;
-      for (const event of events) {
-        if (event.sender === state.agentId) {
-          // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
-          // (her "one moment" note turned into the answer) updates the message it replaces.
-          const relates = (event.content?.['m.relates_to'] ?? {}) as Record<string, unknown>;
-          const replaced = relates.rel_type === 'm.replace' && typeof relates.event_id === 'string' ? relates.event_id : null;
-          const newContent = (event.content?.['m.new_content'] ?? {}) as Record<string, unknown>;
-          const body = typeof (replaced ? newContent.body : event.content?.body) === 'string' ? String(replaced ? newContent.body : event.content?.body) : '';
-          const earlier = replaced ? mine.find((m) => m.eventId === replaced) : undefined;
-          if (earlier) earlier.text = body.slice(0, 1000);
-          else mine.push({ eventId: replaced ?? event.event_id, text: body.slice(0, 1000) });
-          if (mine.length > PENNY_REMEMBERS) mine.splice(0, mine.length - PENNY_REMEMBERS);
-          continue;
-        }
-        let message: InboundMessage | null = null;
-        try {
-          message = parseInbound({
-            // The chat API leaves room_id off each event; it is the room we asked about.
-            event: { ...event, room_id: room.roomId },
-            room_name: room.title,
-            chat_type: room.type,
-            sender_name: room.names[event.sender] ?? '',
-          });
-        } catch {
-          continue;
-        }
-        if (!message) continue;
-        if (message.replyTo) {
-          const hers = mine.find((m) => m.eventId === message.replyTo);
-          if (hers) message.replyToPenny = hers.text;
-        }
-        s.lastActivity = now;
-        const classified = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
-        // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
-        const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
-        if (verdict === 'skip' && message.chatType === 'group' && message.kind !== 'reaction' && !isNarraAgent(message.senderId)) {
-          personSpoke = true;
-        }
-        if (verdict !== 'skip') {
-          answering = true;
-          await sink.deliver(message, verdict);
-          sink.readLag?.((now - Date.parse(message.time)) / 1000);
-          sink.log(`queued ${message.eventId} in ${room.roomId} (${verdict})`);
-        }
-      }
-      await store.put(pennyKey(room.roomId), mine);
-      if (personSpoke && !answering && room.type === 'group') await remindPending(store, sink, room, now);
+      if (await handleEvents(store, sink, room, state.agentId, events, now)) s.lastActivity = now;
       if (events.length) sink.log(`read ${events.length} event(s) in ${room.roomId}`);
       if (next) s.cursor = next;
-      s.nextPollAt = now + (now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS);
+      s.nextPollAt = now + (await nextReadIn(store, s, now));
     }
   } catch (error) {
     sink.log(`reading ${room.roomId} failed: ${(error as Error).message}`);
@@ -262,7 +330,24 @@ export class NarraPoller {
   /** Called by the cron trigger: make sure the loop is running (or stopped, if switched off).
    *  GET .../status reports what the poller last did, for /api/gateway/status. */
   async fetch(request?: Request): Promise<Response> {
-    if (request && new URL(request.url).pathname.endsWith('/status')) {
+    const path = request ? new URL(request.url).pathname : '';
+    if (request?.method === 'POST' && path.endsWith('/events')) {
+      // A batch from MatrixSync. One at a time, so two batches never interleave.
+      const body = (await request.json().catch(() => null)) as { rooms?: SyncedRoom[] } | null;
+      if (!body || !Array.isArray(body.rooms)) return new Response('bad batch', { status: 400 });
+      await this.state.blockConcurrencyWhile(async () => {
+        const { sink, flush } = this.sink();
+        await ingest(this.store(), sink, body.rooms!);
+        await flush();
+      });
+      return Response.json({ ok: true });
+    }
+    if (request?.method === 'POST' && path.endsWith('/log')) {
+      const body = (await request.json().catch(() => null)) as { line?: unknown } | null;
+      if (typeof body?.line === 'string') await remember(this.state.storage, body.line.slice(0, 500));
+      return Response.json({ ok: true });
+    }
+    if (request && path.endsWith('/status')) {
       const rooms = (await this.state.storage.get<RoomsState>('rooms')) ?? null;
       const perRoom: Record<string, unknown> = {};
       for (const room of rooms?.rooms ?? []) {
@@ -296,15 +381,15 @@ export class NarraPoller {
     return Response.json({ running: true });
   }
 
-  async alarm(): Promise<void> {
-    if (!gatewayEnabled(this.env)) return;
+  /** What tick and ingest call out to. Log lines and timings are written after the step, in order. */
+  private sink(): { sink: Sink; flush: () => Promise<void> } {
     const env = this.env;
     const storage = this.state.storage;
     let writes: Promise<void> = Promise.resolve();
     const later = (write: () => Promise<void>) => {
       writes = writes.then(write).catch(() => undefined);
     };
-    const delay = await tick(this.store(), narraApi(env), {
+    const sink: Sink = {
       async hasPending(roomId) {
         const row = await env.DB.prepare(
           "SELECT 1 AS p FROM ledger_expenses WHERE group_id = ? AND status = 'pending' UNION ALL SELECT 1 FROM ledger_settlements WHERE group_id = ? AND status = 'pending' LIMIT 1",
@@ -340,8 +425,15 @@ export class NarraPoller {
         later(() => remember(storage, line));
       },
       readLag: (seconds) => later(() => addSample(storage, 'readLagS', seconds)),
-    });
-    await writes;
+    };
+    return { sink, flush: () => writes };
+  }
+
+  async alarm(): Promise<void> {
+    if (!gatewayEnabled(this.env)) return;
+    const { sink, flush } = this.sink();
+    const delay = await tick(this.store(), narraApi(this.env), sink);
+    await flush();
     await this.state.storage.put('lastTick', Date.now());
     await this.state.storage.setAlarm(Date.now() + delay);
   }

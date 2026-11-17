@@ -39,6 +39,9 @@ The template is designed to be extended and reshaped; these are the load-bearing
      (`probeAgentAuth`), never `message/send` — a real turn bills the user;
    - agent-supplied URLs go through `validateA2AUrl` before use (SSRF guard);
    - error strings pass through `safeErrorText` before leaving the worker;
+   - Penny's Matrix login (fetched with her Narra bearer for the `/sync` reader,
+     `src/worker/gateway/sync.ts`) lives only in the `MatrixSync` object's memory: never stored,
+     logged or returned, and sent only to an https `*.netmind.chat` homeserver;
    - A2A `messageId`s are derived from stored rows, not random, so retries cannot
      double-bill (`src/worker/chat.ts`).
 7. **Keep new routes behind the admin gate.** Any route added under `/api/` is protected by
