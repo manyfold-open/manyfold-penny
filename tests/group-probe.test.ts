@@ -431,9 +431,9 @@ describe('filter: everyday group messages', () => {
   });
 
   it.each(['好喔', 'OK啦', '收到', '收到了', '👍', '+1', '可', '沒錯', '對啊', 'ok 👍', '改成 50 元', '好 #21'])(
-    'treats "%s" as an answer to Penny',
+    'treats "%s" as an answer (passed on only while something waits for an OK)',
     (text) => {
-      expect(classify(m(text), BOT)).toBe('called');
+      expect(classify(m(text), BOT)).toBe('answer');
     },
   );
 

@@ -137,6 +137,7 @@ export async function simulate(input: Scenario): Promise<Result> {
   const quietLags: number[] = [];
   const sink: Sink = {
     botNames: async () => [],
+    hasPending: async () => false,
     deliver: async (message) => {
       const lag = (now - Date.parse(message.time)) / 1000;
       (busyRooms.has(message.roomId) ? busyLags : quietLags).push(lag);

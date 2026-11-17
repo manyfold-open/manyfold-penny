@@ -46,6 +46,8 @@ interface RoomState {
 export interface Sink {
   /** Names Penny answers to in this room, besides "Penny". */
   botNames(roomId: string): Promise<string[]>;
+  /** Whether this group has an expense or repayment waiting for someone's OK. */
+  hasPending(roomId: string): Promise<boolean>;
   deliver(message: InboundMessage, verdict: Verdict): Promise<void>;
   log(line: string): void;
   /** Seconds from a message being sent to the gateway reading it. */
@@ -129,7 +131,9 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
           if (hers) message.replyToPenny = hers.text;
         }
         s.lastActivity = now;
-        const verdict = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
+        const classified = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
+        // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
+        const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
         if (verdict !== 'skip') {
           await sink.deliver(message, verdict);
           sink.readLag?.((now - Date.parse(message.time)) / 1000);
@@ -233,6 +237,14 @@ export class NarraPoller {
       writes = writes.then(write).catch(() => undefined);
     };
     const delay = await tick(this.store(), narraApi(env), {
+      async hasPending(roomId) {
+        const row = await env.DB.prepare(
+          "SELECT 1 AS p FROM ledger_expenses WHERE group_id = ? AND status = 'pending' UNION ALL SELECT 1 FROM ledger_settlements WHERE group_id = ? AND status = 'pending' LIMIT 1",
+        )
+          .bind(roomId, roomId)
+          .first<{ p: number }>();
+        return Boolean(row);
+      },
       async botNames(roomId) {
         const row = await env.DB.prepare('SELECT bot_name FROM ledger_groups WHERE id = ?').bind(roomId).first<{ bot_name: string }>();
         return row?.bot_name ? [row.bot_name] : [];

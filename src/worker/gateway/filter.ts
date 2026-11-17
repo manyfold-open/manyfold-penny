@@ -9,6 +9,10 @@
 import type { InboundMessage } from './inbound';
 
 export type Verdict = 'called' | 'expense' | 'photo' | 'skip';
+/** What classify returns: a Verdict, or 'answer' for a bare "好"/"OK"/"#21" that names nobody.
+ *  People say those to each other all day, so the poller passes one on (as 'called') only
+ *  while the group has a proposal waiting for an OK. */
+export type Classified = Verdict | 'answer';
 
 export interface BotIdentity {
   /** Penny's Matrix user id, e.g. @agent-54ebea3a:matrix.netmind.chat */
@@ -51,7 +55,7 @@ const bareEmoji = (s: string) => s.replace(/[\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '');
 /** Narra gives every agent a Matrix id of the form @agent-<hex>:<server>. People get @sp-…. */
 export const isNarraAgent = (matrixId: string) => /^@agent-[0-9a-f]+:/i.test(matrixId);
 
-export function classify(message: InboundMessage, bot: BotIdentity): Verdict {
+export function classify(message: InboundMessage, bot: BotIdentity): Classified {
   if (message.senderId === bot.matrixId) return 'skip';
   // Another Narra agent. Groups hold several, and they answer each other's messages ("好的。"
   // to Penny's note). Narra refuses an agent's reply to an agent, and nothing they say is a
@@ -74,7 +78,7 @@ export function classify(message: InboundMessage, bot: BotIdentity): Verdict {
   if (message.kind === 'image') return 'photo';
 
   const bare = bareEmoji(text);
-  if (ANSWER.test(bare) || CHANGE.test(bare) || (ENTRY_REF.test(text) && text.length <= 20)) return 'called';
+  if (ANSWER.test(bare) || CHANGE.test(bare) || (ENTRY_REF.test(text) && text.length <= 20)) return 'answer';
 
   const digits = (/\d/.test(text) && AMOUNT.test(text)) || CN_AMOUNT.test(text);
   if (digits && MONEY_WORDS.test(text)) return 'expense';
