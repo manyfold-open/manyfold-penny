@@ -116,10 +116,11 @@ describe('the filter', () => {
     expect(classify(msg('hi', { mentions: [BOT.matrixId] }), BOT)).toBe('called');
   });
 
-  it('calls Penny for answers to a proposal', () => {
+  it('marks a bare answer to a proposal as an answer, for the poller to check against pending items', () => {
     for (const text of ['OK', 'ok #21', '好', '對', '全部 OK', '取消 #3', '改成 50', '#21 OK']) {
-      expect(classify(msg(text), BOT), text).toBe('called');
+      expect(classify(msg(text), BOT), text).toBe('answer');
     }
+    expect(classify(msg('@Penny OK'), BOT)).toBe('called');
   });
 
   it('passes on money talk without a mention', () => {
@@ -143,7 +144,7 @@ describe('the filter', () => {
 
   it('calls Penny for a reply to her, and for a 👍 on her message only', () => {
     expect(classify(msg('好', { replyTo: '$p', replyToPenny: '#21 晚餐' }), BOT)).toBe('called');
-    expect(classify(msg('好', { replyTo: '$x' }), BOT)).toBe('called');
+    expect(classify(msg('好', { replyTo: '$x' }), BOT)).toBe('answer');
     expect(classify(msg('今晚吃什麼', { replyTo: '$x' }), BOT)).toBe('skip');
     expect(classify(msg('👍', { kind: 'reaction', replyTo: '$p', replyToPenny: '#21 晚餐' }), BOT)).toBe('called');
     expect(classify(msg('😂', { kind: 'reaction', replyTo: '$p', replyToPenny: '#21 晚餐' }), BOT)).toBe('skip');
@@ -455,6 +456,7 @@ describe('the poller', () => {
     const delivered: { text: string; verdict: string; name: string }[] = [];
     const s: Sink = {
       botNames: async () => ['小胖'],
+      hasPending: async () => false,
       deliver: async (m, verdict) => {
         delivered.push({ text: m.text, verdict, name: m.senderName });
       },
@@ -490,6 +492,29 @@ describe('the poller', () => {
     ]);
   });
 
+  it('passes on a bare "好" or "OK" only while the group has something waiting for an OK', async () => {
+    for (const pending of [false, true]) {
+      const store = new MemoryStore();
+      const pages = { '!a:x': [] as NarraEvent[] };
+      const { api } = fakeApi(pages);
+      const delivered: string[] = [];
+      const s: Sink = {
+        botNames: async () => [],
+        hasPending: async () => pending,
+        deliver: async (m, verdict) => {
+          delivered.push(`${m.text}:${verdict}`);
+        },
+        log: () => undefined,
+      };
+      let now = 1_000_000;
+      await tick(store, api, s, now);
+      pages['!a:x'].push(text('$1', '好'), text('$2', 'OK #21'), text('$3', '@Penny 好'));
+      now += ACTIVE_EVERY_MS;
+      await tick(store, api, s, now);
+      expect(delivered, `pending=${pending}`).toEqual(pending ? ['好:called', 'OK #21:called', '@Penny 好:called'] : ['@Penny 好:called']);
+    }
+  });
+
   it('passes on replies and 👍 reactions to Penny with the message they answer', async () => {
     const store = new MemoryStore();
     const pages = { '!a:x': [] as NarraEvent[] };
@@ -497,6 +522,7 @@ describe('the poller', () => {
     const delivered: { text: string; verdict: string; replyToPenny?: string }[] = [];
     const s: Sink = {
       botNames: async () => [],
+      hasPending: async () => false,
       deliver: async (m, verdict) => {
         delivered.push({ text: m.text, verdict, replyToPenny: m.replyToPenny });
       },
