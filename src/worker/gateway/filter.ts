@@ -48,8 +48,15 @@ const APPROVE = new Set(['👍', '👌', '✅', '✔', '🆗']);
 /** Emoji without the variation selector (U+FE0F) or skin tone that some clients add: 👍️ and 👍🏽 are 👍. */
 const bareEmoji = (s: string) => s.replace(/[\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '');
 
+/** Narra gives every agent a Matrix id of the form @agent-<hex>:<server>. People get @sp-…. */
+export const isNarraAgent = (matrixId: string) => /^@agent-[0-9a-f]+:/i.test(matrixId);
+
 export function classify(message: InboundMessage, bot: BotIdentity): Verdict {
   if (message.senderId === bot.matrixId) return 'skip';
+  // Another Narra agent. Groups hold several, and they answer each other's messages ("好的。"
+  // to Penny's note). Narra refuses an agent's reply to an agent, and nothing they say is a
+  // ledger entry, so Penny never answers them.
+  if (isNarraAgent(message.senderId)) return 'skip';
   // A reaction counts only as an OK to one of Penny's own messages.
   if (message.kind === 'reaction') return message.replyToPenny !== undefined && APPROVE.has(bareEmoji(message.text).trim()) ? 'called' : 'skip';
   if (message.chatType === 'dm') return 'called';

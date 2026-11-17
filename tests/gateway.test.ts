@@ -100,6 +100,14 @@ describe('parsing', () => {
 });
 
 describe('the filter', () => {
+  it('never answers another Narra agent, even one replying to Penny or naming her', () => {
+    const agent = { senderId: '@agent-82750c4c:matrix.netmind.chat' };
+    expect(classify(msg('好的。', { ...agent, replyToPenny: '🐶 收到～' }), BOT)).toBe('skip');
+    expect(classify(msg('@Penny 晚餐 120 我付', agent), BOT)).toBe('skip');
+    expect(classify(msg('hi', { ...agent, chatType: 'dm' }), BOT)).toBe('skip');
+    expect(classify(msg('@Penny hello', { senderId: '@sp-da27b41aaf5b48a3:matrix.netmind.chat' }), BOT)).toBe('called');
+  });
+
   it('calls Penny when she is mentioned, by name, renamed name, id or m.mentions', () => {
     expect(classify(msg('@Penny 誰欠誰'), BOT)).toBe('called');
     expect(classify(msg('penny 幫我記一下'), BOT)).toBe('called');
@@ -211,7 +219,8 @@ describe('the room queue', () => {
   it('never posts a placeholder for silence', async () => {
     const store = new MemoryStore();
     for (const text of ['a', 'b', 'c']) await enqueue(store, { message: msg(text), verdict: 'called', enqueuedAt: Date.now() });
-    const answers = ['(empty response)', 'No response requested.', '已入帳 #21'];
+    for (const text of ['d', 'e']) await enqueue(store, { message: msg(text), verdict: 'called', enqueuedAt: Date.now() });
+    const answers = ['(empty response)', 'No response requested.', '(No reply. Penny stays quiet here.)', '[silent]', '已入帳 #21'];
     const d = deps({ turn: async () => answers.shift() ?? '' });
     await drain(store, d);
     expect(d.posted).toEqual(['已入帳 #21']);
