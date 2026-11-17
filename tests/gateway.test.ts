@@ -8,7 +8,8 @@ import { drain, enqueue, MAX_ATTEMPTS, noteText, type Deps, type QueuedMessage, 
 import { txnId } from '../src/worker/gateway/reply';
 import { tick, TICK_MS, ACTIVE_EVERY_MS, type Sink } from '../src/worker/gateway/poller';
 import type { NarraApi, NarraEvent } from '../src/worker/gateway/narra-api';
-import { NarraError } from '../src/worker/gateway/reply';
+import { MEMBERSHIP_UNVERIFIED, NarraError } from '../src/worker/gateway/reply';
+import { MEMBERSHIP_RETRY_MS, pennyDeps } from '../src/worker/gateway/deps';
 
 const BOT = { matrixId: '@agent-54ebea3a:matrix.netmind.chat', names: ['Penny', '小胖'] };
 
@@ -356,6 +357,43 @@ describe('the room queue', () => {
     expect(await drain(store, d)).toBeNull();
     expect(d.posted).toEqual(['ok']);
     expect(turn).toHaveBeenCalledTimes(MAX_ATTEMPTS + 1);
+  });
+
+  it('resends a refused post on its own schedule without running Penny again', async () => {
+    const store = new MemoryStore();
+    await enqueue(store, { message: msg('@Penny hello'), verdict: 'called', enqueuedAt: Date.now() });
+    const turn = vi.fn(async () => 'hi!');
+    let refusals = 2;
+    const posted: string[] = [];
+    const d = deps({
+      turn,
+      post: async (_item, text) => {
+        if (refusals-- > 0) throw new NarraError('Narra send failed: HTTP 403', true, MEMBERSHIP_UNVERIFIED);
+        posted.push(text);
+      },
+      retryable: pennyDeps({} as never).retryable,
+    });
+    expect(await drain(store, d)).toBe(MEMBERSHIP_RETRY_MS[0]);
+    expect(await drain(store, d)).toBe(MEMBERSHIP_RETRY_MS[1]);
+    expect(await drain(store, d)).toBeNull();
+    expect(posted).toEqual(['hi!']);
+    expect(turn).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up on a refused post once the schedule runs out', async () => {
+    const store = new MemoryStore();
+    await enqueue(store, { message: msg('@Penny hello'), verdict: 'called', enqueuedAt: Date.now() });
+    const turn = vi.fn(async () => 'hi!');
+    const d = deps({
+      turn,
+      post: async () => {
+        throw new NarraError('Narra send failed: HTTP 403', true, MEMBERSHIP_UNVERIFIED);
+      },
+      retryable: pennyDeps({} as never).retryable,
+    });
+    for (const delay of MEMBERSHIP_RETRY_MS) expect(await drain(store, d)).toBe(delay);
+    expect(await drain(store, d)).toBeNull();
+    expect(turn).toHaveBeenCalledTimes(1);
   });
 
   it('drops messages that waited too long', async () => {

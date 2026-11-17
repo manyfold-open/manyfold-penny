@@ -26,6 +26,9 @@ export interface QueuedMessage {
   enqueuedAt: number;
   /** Event id of Penny's "one moment" note for this message, once it is posted. */
   ackId?: string;
+  /** Penny's answer, once her turn is done, so a retry after a failed post resends it
+   *  instead of running (and billing) another turn. */
+  answer?: string;
 }
 
 export interface Store {
@@ -46,8 +49,10 @@ export interface Deps {
   patch?(item: QueuedMessage, ackId: string, text: string): Promise<void>;
   /** Remove the note when Penny says nothing. */
   remove?(item: QueuedMessage, ackId: string): Promise<void>;
-  /** Whether an error is worth another try. */
-  retryable(error: unknown): boolean;
+  /** Whether an error is worth another try: false to give up, true for the usual backoff
+   *  (up to MAX_ATTEMPTS), or the delay in ms before the next try, for errors with a
+   *  schedule of their own. `attempts` counts this failed one. */
+  retryable(error: unknown, attempts: number): boolean | number;
   /** A timing sample in seconds: waitS (queued → turn starts), turnS (Penny's turn), answerS
    *  (message sent → answer posted). */
   timing?(name: 'waitS' | 'turnS' | 'answerS', seconds: number): void;
@@ -201,7 +206,7 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       // Not for a reaction: a 👍 on a message with nothing pending gets no answer, and a note
       // that is posted and then deleted shows up in the room as "Penny recalled a message".
       // Not for small talk either: nobody says "let me check" before answering a "hi".
-      if (item.verdict === 'called' && item.message.kind !== 'reaction' && !item.ackId && deps.ack && noteText(item, 'working')) {
+      if (item.verdict === 'called' && item.message.kind !== 'reaction' && !item.ackId && item.answer === undefined && deps.ack && noteText(item, 'working')) {
         try {
           const ackId = await deps.ack(item);
           if (ackId) {
@@ -212,9 +217,14 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
           deps.log(`could not post the note for ${item.message.eventId}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      const turnStarted = Date.now();
-      const answer = await deps.turn(item);
-      deps.timing?.('turnS', (Date.now() - turnStarted) / 1000);
+      let answer = item.answer;
+      if (answer === undefined) {
+        const turnStarted = Date.now();
+        answer = await deps.turn(item);
+        deps.timing?.('turnS', (Date.now() - turnStarted) / 1000);
+        item.answer = answer;
+        await store.put(key, item);
+      }
       const posted = Boolean(answer) && !isSilence(answer);
       if (posted && item.ackId && deps.patch) {
         try {
@@ -234,7 +244,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
     } catch (error) {
       const attempts = item.attempts + 1;
       const message = error instanceof Error ? error.message : String(error);
-      if (attempts >= MAX_ATTEMPTS || !deps.retryable(error)) {
+      const retry = deps.retryable(error, attempts);
+      if (retry === false || (retry === true && attempts >= MAX_ATTEMPTS)) {
         deps.log(`gave up on ${item.message.eventId} after ${attempts} attempt(s): ${message}`);
         if (item.ackId && deps.patch) {
           await deps.patch(item, item.ackId, noteText(item, 'failed')).catch(() => undefined);
@@ -245,7 +256,7 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       deps.log(`retrying ${item.message.eventId} (attempt ${attempts}): ${message}`);
       await store.put(key, { ...item, attempts });
       // Hold the whole room: the next message may depend on this one.
-      return 5_000 * 2 ** (attempts - 1);
+      return typeof retry === 'number' ? retry : 5_000 * 2 ** (attempts - 1);
     }
   }
   const [left] = await store.list({ prefix: 'q:', limit: 1 });

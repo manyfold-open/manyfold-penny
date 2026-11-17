@@ -46,13 +46,20 @@ export async function runPennyTurn(env: Env, text: string, eventId: string): Pro
 
 export class NarraError extends Error {
   readonly retryable: boolean;
+  /** Narra's issue code, when it gave one (e.g. "matrix-membership-unverified"). */
+  readonly code?: string;
 
-  constructor(message: string, retryable: boolean) {
+  constructor(message: string, retryable: boolean, code?: string) {
     super(message);
     this.name = 'NarraError';
     this.retryable = retryable;
+    this.code = code;
   }
 }
+
+/** Narra answers some of Penny's sends in a busy group with this 403 and lets the same send
+ *  through a little later, so it is worth retrying after a pause (see membershipRetryDelay). */
+export const MEMBERSHIP_UNVERIFIED = 'matrix-membership-unverified';
 
 async function narraPost(env: Env, path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   const token = (env.NARRA_AGENT_TOKEN ?? '').trim();
@@ -72,9 +79,20 @@ async function narraPost(env: Env, path: string, body: Record<string, unknown>):
   const parsed = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok || !parsed || parsed.status !== 'ok') {
     const detail = safeErrorText(JSON.stringify(parsed?.issues ?? parsed ?? ''));
-    throw new NarraError(`Narra ${path} failed: HTTP ${response.status}${detail ? ` · ${detail}` : ''}`, response.status === 429 || response.status >= 500);
+    const code = issueCode(parsed?.issues);
+    throw new NarraError(
+      `Narra ${path} failed: HTTP ${response.status}${detail ? ` · ${detail}` : ''}`,
+      response.status === 429 || response.status >= 500 || code === MEMBERSHIP_UNVERIFIED,
+      code,
+    );
   }
   return (parsed.data ?? {}) as Record<string, unknown>;
+}
+
+function issueCode(issues: unknown): string | undefined {
+  if (!Array.isArray(issues)) return undefined;
+  const first = issues.find((i) => i && typeof i === 'object' && typeof (i as { code?: unknown }).code === 'string');
+  return first ? (first as { code: string }).code : undefined;
 }
 
 /** Post a message into the room and return its event id. txn_id is derived from `key`, so a
