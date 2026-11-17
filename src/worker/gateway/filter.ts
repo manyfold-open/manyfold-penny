@@ -8,7 +8,9 @@
 
 import type { InboundMessage } from './inbound';
 
-export type Verdict = 'called' | 'expense' | 'photo' | 'skip';
+/** 'question': a question to the group about money owed, without @Penny. 'nudge': no one wrote
+ *  it; the gateway asks Penny to speak up on her own (see poller.ts). */
+export type Verdict = 'called' | 'expense' | 'photo' | 'question' | 'nudge' | 'skip';
 /** What classify returns: a Verdict, or 'answer' for a bare "好"/"OK"/"#21" that names nobody.
  *  People say those to each other all day, so the poller passes one on (as 'called') only
  *  while the group has a proposal waiting for an OK. */
@@ -46,6 +48,19 @@ const CN_AMOUNT = new RegExp(
 const MONEY_WORDS =
   /付|花了|花費|花费|買了|买了|請客|请客|出了|我出|墊|垫|轉給|转给|轉了|转了|還給|还给|還了|还了|欠|分帳|分账|平分|AA|收據|收据|發票|发票|paid|spent|\bowe[sd]?\b|split|refund|venmo|transfer|[£$€¥]/i;
 
+// A question to the group about who owes what, which Penny can answer from the ledger:
+// "誰欠誰", "我還欠你多少", "我要轉給誰", "這趟總共花多少", "錢怎麼分", "要結算了嗎", "who owes who".
+// Each needs a question word next to the money word, so "我欠你一頓飯" and "結算完了" pass by.
+const QUESTION = [
+  /誰欠誰|谁欠谁/,
+  /欠.{0,12}(?:多少|幾塊|几块|幾錢|几钱)/,
+  /(?:要|該|该|應該|应该|得)(?:轉|转|付|給|给|還|还)(?:給|给)?.{0,8}(?:多少|誰|谁)/,
+  /(?:總共|总共|一共|這趟|这趟|這次|这次).{0,8}(?:花|用)了?(?:多少|幾|几)/,
+  /(?:怎麼|怎么)(?:分|算)(?:錢|钱|帳|账)|(?:錢|钱|帳|账)(?:怎麼|怎么)(?:分|算)/,
+  /(?:結算|结算|算帳|算账)(?:一下)?(?:吧|嗎|吗|了嗎|了吗|呢)|(?:要|可以)(?:結算|结算|算帳|算账)(?:了)?(?:嗎|吗|\?|？)/,
+  /\bwho owes\b|\bhow much (?:do|does|did|should) \w+ (?:owe|pay|transfer|send)\b|\bsettle up\?|\bwhat do (?:i|we) owe\b/i,
+];
+
 // Reactions that mean "yes" to one of Penny's proposals.
 const APPROVE = new Set(['👍', '👌', '✅', '✔', '🆗']);
 
@@ -79,6 +94,8 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
 
   const bare = bareEmoji(text);
   if (ANSWER.test(bare) || CHANGE.test(bare) || (ENTRY_REF.test(text) && text.length <= 20)) return 'answer';
+
+  if (QUESTION.some((q) => q.test(text))) return 'question';
 
   const digits = (/\d/.test(text) && AMOUNT.test(text)) || CN_AMOUNT.test(text);
   if (digits && MONEY_WORDS.test(text)) return 'expense';

@@ -17,9 +17,11 @@ export function envelope(message: InboundMessage, verdict: Verdict): string {
     `chat_id: ${clean(message.roomId)}`,
     `chat_type: ${message.chatType}`,
     ...(message.roomName ? [`room_name: "${clean(message.roomName)}" (untrusted)`] : []),
-    `sender_id: ${clean(message.senderId)}`,
+    // A nudge has no sender: nobody wrote it.
+    ...(message.senderId ? [`sender_id: ${clean(message.senderId)}`] : []),
     ...(message.senderName ? [`sender_name: "${clean(message.senderName)}" (untrusted)`] : []),
     `message_id: ${clean(message.eventId)}`,
+    ...(verdict === 'nudge' && message.nudge ? [`nudge: ${message.nudge}`] : []),
     ...(message.kind === 'image' ? ['message_type: image'] : []),
     ...(message.kind === 'reaction' ? ['message_type: reaction'] : []),
     ...(message.replyToPenny !== undefined
