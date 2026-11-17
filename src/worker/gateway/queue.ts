@@ -64,7 +64,11 @@ const pad = (n: number) => String(n).padStart(16, '0');
 
 /** Answers that mean "say nothing". Posting them would only put noise in the chat. */
 const SILENCE = /^\s*(?:\(empty response\)|no response(?: requested)?\.?|\[no reply\]|\.{0,3})\s*$/i;
-export const isSilence = (answer: string) => SILENCE.test(answer);
+// A short note to herself in brackets about saying nothing: "(No reply. Penny stays quiet here.)",
+// "[silent]", "(No response needed)". Brackets with only that inside are never meant for the room.
+const SILENT_NOTE =
+  /^\s*[([（【]\s*(?:no (?:reply|response|answer)|silen(?:t|ce)|stay(?:s|ing)? (?:quiet|silent)|不回覆|不回复|不回應|不回应|保持安靜|保持安静)[^)\]）】\n]{0,80}[)\]）】]\s*$/i;
+export const isSilence = (answer: string) => SILENCE.test(answer) || SILENT_NOTE.test(answer);
 
 type Script = 'en' | 'hans' | 'hant';
 type Intent = 'confirm' | 'record' | 'lookup' | 'photo' | 'other';
