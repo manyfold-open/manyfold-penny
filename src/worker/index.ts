@@ -45,6 +45,7 @@ import { gatewayEnabled } from './gateway/poller';
 
 export { RoomQueue } from './gateway/queue';
 export { NarraPoller } from './gateway/poller';
+export { MatrixSync } from './gateway/sync';
 
 const SERVICE = 'manyfold-penny';
 
@@ -197,13 +198,18 @@ app.get('/api/gateway/status', async (c) => {
       queues[roomId] = await (await env.ROOM_QUEUE.get(env.ROOM_QUEUE.idFromName(roomId)).fetch('https://room-queue/status')).json();
     }
   }
+  const sync = env.MATRIX_SYNC
+    ? await (await env.MATRIX_SYNC.get(env.MATRIX_SYNC.idFromName('narra')).fetch('https://matrix-sync/status')).json()
+    : null;
   return c.json({
     config: {
       NARRA_GATEWAY: (env.NARRA_GATEWAY ?? '').trim() || null,
+      NARRA_SYNC: (env.NARRA_SYNC ?? '').trim() || null,
       PENNY_AGENT_ID: Boolean((env.PENNY_AGENT_ID ?? '').trim()),
       NARRA_AGENT_TOKEN: Boolean((env.NARRA_AGENT_TOKEN ?? '').trim()),
     },
     poller,
+    sync,
     queues,
   });
 });
@@ -241,6 +247,8 @@ async function scheduled(_controller: ScheduledController, env: Env): Promise<vo
   if (!env.NARRA_POLLER) return;
   if (!gatewayEnabled(env) && !(env.NARRA_GATEWAY ?? '').trim()) return;
   await env.NARRA_POLLER.get(env.NARRA_POLLER.idFromName('narra')).fetch('https://narra-poller/kick');
+  // Starts the /sync reader, or stops it when NARRA_SYNC is not "on".
+  if (env.MATRIX_SYNC) await env.MATRIX_SYNC.get(env.MATRIX_SYNC.idFromName('narra')).fetch('https://matrix-sync/kick');
 }
 
 export default { fetch: app.fetch, scheduled };

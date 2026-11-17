@@ -33,10 +33,15 @@
   "durable_objects": {
     "bindings": [
       { "name": "NARRA_POLLER", "class_name": "NarraPoller" },
-      { "name": "ROOM_QUEUE", "class_name": "RoomQueue" }
+      { "name": "ROOM_QUEUE", "class_name": "RoomQueue" },
+      // Reads Narra in real time through Matrix /sync; off unless NARRA_SYNC is "on".
+      { "name": "MATRIX_SYNC", "class_name": "MatrixSync" }
     ]
   },
-  "migrations": [{ "tag": "v1-narra-gateway", "new_sqlite_classes": ["NarraPoller", "RoomQueue"] }],
+  "migrations": [
+    { "tag": "v1-narra-gateway", "new_sqlite_classes": ["NarraPoller", "RoomQueue"] },
+    { "tag": "v2-matrix-sync", "new_sqlite_classes": ["MatrixSync"] }
+  ],
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     // Manyfold API base. Point at https://api-staging.manyfold.ai via .dev.vars for local dev.
@@ -46,6 +51,8 @@
     // The Narra gateway (src/worker/gateway): on. It also needs the NARRA_AGENT_TOKEN secret,
     // and the Manyfold Matrix channel switched off, or Penny answers twice.
     "NARRA_GATEWAY": "poll",
+    // Real-time reading through Matrix /sync (gateway/sync.ts). "off" falls back to polling alone.
+    "NARRA_SYNC": "on",
     "PENNY_AGENT_ID": "agt_agq6jhpwszzvfiqu6djcbe2ola"
   }
   // Optional hardening, neither is required to deploy:
