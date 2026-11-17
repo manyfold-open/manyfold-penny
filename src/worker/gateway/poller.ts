@@ -15,7 +15,7 @@
  */
 
 import type { Env } from '../types';
-import { classify, type Verdict } from './filter';
+import { classify, isNarraAgent, type Verdict } from './filter';
 import { parseInbound, type InboundMessage } from './inbound';
 import { narraApi, type NarraApi, type NarraRoom } from './narra-api';
 import { NarraError } from './reply';
@@ -30,6 +30,10 @@ const REFUSED_FOR_MS = 5 * 60_000;
 const ACTIVE_FOR_MS = 15 * 60_000;
 const ROOMS_EVERY_MS = 5 * 60_000;
 const BACKOFF_MS = 30_000;
+/** An entry waiting this long for its OK gets one reminder, the next time someone talks. */
+export const PENDING_STALE_MS = 3 * 60 * 60_000;
+/** At most one reminder per room in this long. */
+export const NUDGE_EVERY_MS = 3 * 60 * 60_000;
 
 interface RoomsState {
   refreshedAt: number;
@@ -48,6 +52,11 @@ export interface Sink {
   botNames(roomId: string): Promise<string[]>;
   /** Whether this group has an expense or repayment waiting for someone's OK. */
   hasPending(roomId: string): Promise<boolean>;
+  /** Entry numbers in this group that are still pending and were proposed before `before`
+   *  (ISO time). Without it, Penny sends no reminders. */
+  stalePending?(roomId: string, before: string): Promise<number[]>;
+  /** Whether the ledger already has this group. Without it, Penny sends no welcome. */
+  knownGroup?(roomId: string): Promise<boolean>;
   deliver(message: InboundMessage, verdict: Verdict): Promise<void>;
   log(line: string): void;
   /** Seconds from a message being sent to the gateway reading it. */
@@ -55,6 +64,49 @@ export interface Sink {
 }
 
 const roomKey = (id: string) => `room:${id}`;
+const nudgedKey = (id: string) => `nudged:${id}`;
+const welcomedKey = (id: string) => `welcomed:${id}`;
+
+interface Nudged {
+  at: number;
+  /** Entries already reminded about, so each gets one reminder. */
+  seqs: number[];
+}
+
+/** A message nobody wrote: the gateway asking Penny to speak up in a group on her own. */
+function nudgeMessage(room: NarraRoom, kind: 'pending' | 'welcome', now: number, seqs: number[] = []): InboundMessage {
+  return {
+    roomId: room.roomId,
+    roomName: room.title,
+    chatType: 'group',
+    // Derived from what it is about, so the same reminder cannot be queued or billed twice.
+    eventId: `nudge:${kind}:${room.roomId}${seqs.length ? `:${seqs.join(',')}` : ''}`,
+    senderId: '',
+    senderName: '',
+    text: `[penny nudge] ${kind}${seqs.map((n) => ` #${n}`).join('')}`,
+    time: new Date(now).toISOString(),
+    mentions: [],
+    nudge: kind,
+  };
+}
+
+/**
+ * Someone talked in a group, and Penny was not asked anything. If an entry there has waited
+ * hours for its OK, have Penny remind the group once. Tied to someone talking, so she never
+ * posts into a quiet chat, and people are there to read it.
+ */
+async function remindPending(store: Store, sink: Sink, room: NarraRoom, now: number): Promise<void> {
+  if (!sink.stalePending) return;
+  const nudged = (await store.get<Nudged>(nudgedKey(room.roomId))) ?? { at: 0, seqs: [] };
+  if (now - nudged.at < NUDGE_EVERY_MS) return;
+  const seqs = (await sink.stalePending(room.roomId, new Date(now - PENDING_STALE_MS).toISOString())).filter(
+    (n) => !nudged.seqs.includes(n),
+  );
+  if (seqs.length === 0) return;
+  await sink.deliver(nudgeMessage(room, 'pending', now, seqs), 'nudge');
+  await store.put(nudgedKey(room.roomId), { at: now, seqs: [...nudged.seqs, ...seqs].slice(-200) } satisfies Nudged);
+  sink.log(`reminding ${room.roomId} of pending ${seqs.map((n) => `#${n}`).join(' ')}`);
+}
 const pennyKey = (id: string) => `penny:${id}`;
 /** How many of Penny's own messages per room the poller keeps, to match replies and reactions. */
 export const PENNY_REMEMBERS = 30;
@@ -95,10 +147,21 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
       s.cursor = await api.head(room.roomId);
       sink.log(`started reading ${room.roomId}${s.cursor ? '' : ' (no position yet)'}`);
       s.nextPollAt = now + ACTIVE_EVERY_MS;
+      // Penny was just added to a group the ledger does not know: say hello without waiting
+      // for someone to call her.
+      if (room.type === 'group' && sink.knownGroup && !(await store.get(welcomedKey(room.roomId))) && !(await sink.knownGroup(room.roomId))) {
+        await sink.deliver(nudgeMessage(room, 'welcome', now), 'nudge');
+        await store.put(welcomedKey(room.roomId), now);
+        sink.log(`welcoming ${room.roomId}`);
+      }
     } else {
       const { events, next } = await api.after(room.roomId, s.cursor);
       const names = await sink.botNames(room.roomId);
       const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
+      // Whether a person spoke without asking Penny anything, and whether Penny already has
+      // something to answer here: a reminder is only for the first case without the second.
+      let personSpoke = false;
+      let answering = false;
       for (const event of events) {
         if (event.sender === state.agentId) {
           // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
@@ -134,13 +197,18 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
         const classified = classify(message, { matrixId: state.agentId, names: ['Penny', ...names] });
         // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
         const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
+        if (verdict === 'skip' && message.chatType === 'group' && message.kind !== 'reaction' && !isNarraAgent(message.senderId)) {
+          personSpoke = true;
+        }
         if (verdict !== 'skip') {
+          answering = true;
           await sink.deliver(message, verdict);
           sink.readLag?.((now - Date.parse(message.time)) / 1000);
           sink.log(`queued ${message.eventId} in ${room.roomId} (${verdict})`);
         }
       }
       await store.put(pennyKey(room.roomId), mine);
+      if (personSpoke && !answering && room.type === 'group') await remindPending(store, sink, room, now);
       if (events.length) sink.log(`read ${events.length} event(s) in ${room.roomId}`);
       if (next) s.cursor = next;
       s.nextPollAt = now + (now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS);
@@ -244,6 +312,17 @@ export class NarraPoller {
           .bind(roomId, roomId)
           .first<{ p: number }>();
         return Boolean(row);
+      },
+      async stalePending(roomId, before) {
+        const { results } = await env.DB.prepare(
+          "SELECT seq FROM ledger_expenses WHERE group_id = ? AND status = 'pending' AND created_at <= ? UNION SELECT seq FROM ledger_settlements WHERE group_id = ? AND status = 'pending' AND created_at <= ? ORDER BY seq LIMIT 20",
+        )
+          .bind(roomId, before, roomId, before)
+          .all<{ seq: number }>();
+        return results.map((r) => r.seq);
+      },
+      async knownGroup(roomId) {
+        return Boolean(await env.DB.prepare('SELECT 1 AS g FROM ledger_groups WHERE id = ?').bind(roomId).first());
       },
       async botNames(roomId) {
         const row = await env.DB.prepare('SELECT bot_name FROM ledger_groups WHERE id = ?').bind(roomId).first<{ bot_name: string }>();

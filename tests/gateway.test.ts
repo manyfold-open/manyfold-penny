@@ -6,7 +6,8 @@ import { classify } from '../src/worker/gateway/filter';
 import { parseInbound, type InboundMessage } from '../src/worker/gateway/inbound';
 import { drain, enqueue, MAX_ATTEMPTS, noteText, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
 import { txnId } from '../src/worker/gateway/reply';
-import { tick, TICK_MS, ACTIVE_EVERY_MS, type Sink } from '../src/worker/gateway/poller';
+import { tick, TICK_MS, ACTIVE_EVERY_MS, NUDGE_EVERY_MS, PENDING_STALE_MS, type Sink } from '../src/worker/gateway/poller';
+import { envelope } from '../src/worker/gateway/envelope';
 import type { NarraApi, NarraEvent } from '../src/worker/gateway/narra-api';
 import { MEMBERSHIP_UNVERIFIED, NarraError } from '../src/worker/gateway/reply';
 import { MEMBERSHIP_RETRY_MS, pennyDeps } from '../src/worker/gateway/deps';
@@ -588,5 +589,127 @@ describe('the poller', () => {
     await tick(store, failing, s, now + TICK_MS);
     expect(await store.get('room:!b:x')).toMatchObject({ cursor: 't0' });
     expect(((await store.get('room:!a:x')) as { nextPollAt: number }).nextPollAt).toBeGreaterThan(now + TICK_MS);
+  });
+});
+
+describe('money questions without @Penny', () => {
+  it('passes on questions about who owes what', () => {
+    for (const q of ['誰欠誰啊', '我還欠你多少？', '我要轉給誰', '這趟總共花了多少', '錢怎麼分', '要結算了嗎？', '结算一下吧', 'who owes who?', 'How much do I owe Mei', 'what do we owe']) {
+      expect(classify(msg(q), BOT), q).toBe('question');
+    }
+  });
+
+  it('leaves money talk that asks nothing alone', () => {
+    for (const q of ['我欠你一頓飯', '結算完了', '誰要去吃飯', '多少人要來', 'I owe you one']) {
+      expect(classify(msg(q), BOT), q).toBe('skip');
+    }
+  });
+
+  it('ignores the same question from another agent', () => {
+    expect(classify(msg('誰欠誰', { senderId: '@agent-1234abcd:x' }), BOT)).toBe('skip');
+  });
+});
+
+describe('Penny speaking up on her own', () => {
+  const PENNY = '@agent-54ebea3a:matrix.netmind.chat';
+  const HOUR = 60 * 60_000;
+  const text = (id: string, body: string, sender = '@mei:x'): NarraEvent => ({
+    event_id: id,
+    sender,
+    origin_server_ts: 0,
+    type: 'm.room.message',
+    content: { msgtype: 'm.text', body },
+  });
+  const setup = (opts: { type?: 'group' | 'dm'; known?: boolean; stale?: number[] } = {}) => {
+    const pages: Record<string, NarraEvent[]> = { '!a:x': [] };
+    const api: NarraApi = {
+      rooms: async () => ({ agentId: PENNY, rooms: [{ roomId: '!a:x', type: opts.type ?? 'group', title: '倫敦', memberCount: 4, names: {} }] }),
+      head: async () => 't0',
+      after: async (roomId) => {
+        const events = pages[roomId].splice(0);
+        return { events, next: events.length ? 't1' : null };
+      },
+    };
+    const delivered: { message: InboundMessage; verdict: string }[] = [];
+    let staleBefore = '';
+    const s: Sink = {
+      botNames: async () => [],
+      hasPending: async () => (opts.stale ?? []).length > 0,
+      stalePending: async (_room, before) => {
+        staleBefore = before;
+        return opts.stale ?? [];
+      },
+      knownGroup: async () => opts.known ?? true,
+      deliver: async (message, verdict) => {
+        delivered.push({ message, verdict });
+      },
+      log: () => undefined,
+    };
+    return { store: new MemoryStore(), api, s, pages, delivered, staleBefore: () => staleBefore };
+  };
+
+  it('welcomes a group it has just been added to, once', async () => {
+    const t = setup({ known: false });
+    await tick(t.store, t.api, t.s, 1_000_000);
+    expect(t.delivered.map((d) => [d.message.text, d.verdict, d.message.nudge])).toEqual([['[penny nudge] welcome', 'nudge', 'welcome']]);
+    expect(envelope(t.delivered[0].message, 'nudge')).toContain('nudge: welcome');
+    expect(envelope(t.delivered[0].message, 'nudge')).not.toContain('sender_id');
+  });
+
+  it('does not welcome a group the ledger knows, or a private chat', async () => {
+    for (const opts of [{ known: true }, { known: false, type: 'dm' as const }]) {
+      const t = setup(opts);
+      await tick(t.store, t.api, t.s, 1_000_000);
+      expect(t.delivered).toEqual([]);
+    }
+  });
+
+  it('reminds of entries waiting hours for an OK when someone talks, once each', async () => {
+    const t = setup({ stale: [21, 23] });
+    let now = 10 * HOUR;
+    await tick(t.store, t.api, t.s, now);
+    t.pages['!a:x'].push(text('$1', '今晚吃什麼'));
+    now += ACTIVE_EVERY_MS;
+    await tick(t.store, t.api, t.s, now);
+    expect(t.delivered.map((d) => [d.message.text, d.verdict])).toEqual([['[penny nudge] pending #21 #23', 'nudge']]);
+    expect(t.staleBefore()).toBe(new Date(now - PENDING_STALE_MS).toISOString());
+
+    // The same entries are never reminded again, even after the room's quiet period.
+    now += NUDGE_EVERY_MS + 1;
+    t.pages['!a:x'].push(text('$2', '明天呢'));
+    await tick(t.store, t.api, t.s, now);
+    expect(t.delivered).toHaveLength(1);
+  });
+
+  it('waits out the room\'s quiet period before a reminder about newer entries', async () => {
+    const t = setup({ stale: [21] });
+    let now = 10 * HOUR;
+    await tick(t.store, t.api, t.s, now);
+    t.pages['!a:x'].push(text('$1', '今晚吃什麼'));
+    now += ACTIVE_EVERY_MS;
+    await tick(t.store, t.api, t.s, now);
+    t.s.stalePending = async () => [21, 22];
+    t.pages['!a:x'].push(text('$2', '好餓'));
+    now += HOUR;
+    await tick(t.store, t.api, t.s, now);
+    expect(t.delivered).toHaveLength(1);
+    t.pages['!a:x'].push(text('$3', '好餓'));
+    now += NUDGE_EVERY_MS;
+    await tick(t.store, t.api, t.s, now);
+    expect(t.delivered.map((d) => d.message.text)).toEqual(['[penny nudge] pending #21', '[penny nudge] pending #22']);
+  });
+
+  it('sends no reminder when Penny is answering, when only agents talk, or in a private chat', async () => {
+    const cases: [ReturnType<typeof setup>, NarraEvent][] = [
+      [setup({ stale: [21] }), text('$1', '@Penny 誰欠誰')],
+      [setup({ stale: [21] }), text('$1', '好的。', '@agent-1234abcd:x')],
+      [setup({ stale: [21], type: 'dm' }), text('$1', '今晚吃什麼')],
+    ];
+    for (const [t, event] of cases) {
+      await tick(t.store, t.api, t.s, 10 * HOUR);
+      t.pages['!a:x'].push(event);
+      await tick(t.store, t.api, t.s, 10 * HOUR + ACTIVE_EVERY_MS);
+      expect(t.delivered.filter((d) => d.verdict === 'nudge'), event.content?.body as string).toEqual([]);
+    }
   });
 });
