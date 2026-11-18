@@ -86,6 +86,32 @@ const SILENT_NOTE =
   /^\s*[([（【]\s*(?:no (?:reply|response|answer)|silen(?:t|ce)|stay(?:s|ing)? (?:quiet|silent)|不回覆|不回复|不回應|不回应|保持安靜|保持安静)[^)\]）】\n]{0,80}[)\]）】]\s*$/i;
 export const isSilence = (answer: string) => SILENCE.test(answer) || SILENT_NOTE.test(answer);
 
+/**
+ * Penny's notes to herself sometimes reach the answer glued in front of it, with no space where
+ * one text block ended and the next began: "Entry #3 is pending, so I'll cancel it.已改好，#3 取消…",
+ * "Test format message: skip steps 0–1. Check pending.Ken is involved in #5.#5 計程車…". The tell
+ * is a sentence ending in a lowercase letter and a period, run straight into a capital, a "#" or
+ * Chinese. Only a leading English run on the first line is cut, and only when the cut ends at
+ * such a seam, so a URL ("netmind-ai.workers.dev") or an amount ("£3.33") is never touched.
+ */
+const SEAM = /[a-z0-9)'"][.!?:](?=[A-Z#\u3400-\u9fff])/g;
+
+export function stripLeakedNotes(answer: string): { text: string; cut: string } {
+  const firstLine = answer.split('\n', 1)[0];
+  if (!/^[A-Z]/.test(firstLine)) return { text: answer, cut: '' };
+  // The note is English: it ends where the first Chinese or line break begins, at the latest.
+  const cjk = firstLine.search(/[\u3400-\u9fff]/);
+  const scope = cjk === -1 ? firstLine : firstLine.slice(0, cjk + 1);
+  let end = -1;
+  for (const seam of scope.matchAll(SEAM)) end = seam.index + 2;
+  if (end < 0) return { text: answer, cut: '' };
+  const cut = answer.slice(0, end);
+  // A real note has a few words in it; "OK.#21" or "Hi!Zack" is not one.
+  if (cut.trim().split(/\s+/).length < 4) return { text: answer, cut: '' };
+  const text = answer.slice(end).trimStart();
+  return text ? { text, cut } : { text: answer, cut: '' };
+}
+
 type Script = 'en' | 'hans' | 'hant';
 type Intent = 'confirm' | 'record' | 'lookup' | 'photo' | 'other';
 
@@ -260,6 +286,9 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         }
         phase = 'post';
         deps.timing?.('turnS', (Date.now() - turnStarted) / 1000);
+        const { text, cut } = stripLeakedNotes(answer);
+        if (cut) deps.log(`cut a leaked note from the answer to ${item.message.eventId} (${cut.length} chars)`);
+        answer = text;
         item.answer = answer;
         await store.put(key, item);
       }

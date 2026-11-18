@@ -38,6 +38,7 @@ import { safeEqual } from '../crypto';
 import { HttpError, type Env } from '../types';
 import * as store from './store';
 import { shareLink } from './share';
+import { requireActor } from './actor';
 
 type Ctx = Context<{ Bindings: Env }>;
 
@@ -83,7 +84,11 @@ function seqParam(c: Ctx): number {
 }
 
 const g = (c: Ctx) => c.req.param('g') as string;
-const actor = (b: Record<string, unknown>, field = 'createdBy') => b[field] as string;
+/** The member a change is made in the name of, checked against the gateway's actor token (see actor.ts). */
+async function actor(c: Ctx, b: Record<string, unknown>, field = 'createdBy'): Promise<string> {
+  await requireActor(c.env, g(c), b[field], b.actorToken);
+  return b[field] as string;
+}
 
 /* groups and members */
 
@@ -109,7 +114,7 @@ ledger.post('/groups/:g/guests', async (c) => {
 
 ledger.post('/groups/:g/expenses', async (c) => {
   const b = await body(c);
-  return c.json({ entry: await store.proposeExpense(c.env, g(c), actor(b), b as store.ExpenseInput) }, 201);
+  return c.json({ entry: await store.proposeExpense(c.env, g(c), await actor(c, b), b as store.ExpenseInput) }, 201);
 });
 
 ledger.get('/groups/:g/expenses', async (c) =>
@@ -123,18 +128,18 @@ ledger.get('/groups/:g/expenses', async (c) =>
 
 ledger.post('/groups/:g/expenses/:seq/edit', async (c) => {
   const b = await body(c);
-  return c.json({ entry: await store.proposeEdit(c.env, g(c), seqParam(c), actor(b), b as store.ExpenseInput) }, 201);
+  return c.json({ entry: await store.proposeEdit(c.env, g(c), seqParam(c), await actor(c, b), b as store.ExpenseInput) }, 201);
 });
 
 ledger.post('/groups/:g/expenses/:seq/delete', async (c) => {
   const b = await body(c);
-  return c.json({ entry: await store.proposeDelete(c.env, g(c), seqParam(c), actor(b)) }, 201);
+  return c.json({ entry: await store.proposeDelete(c.env, g(c), seqParam(c), await actor(c, b)) }, 201);
 });
 
 ledger.post('/groups/:g/settlements', async (c) => {
   const b = await body(c);
   return c.json(
-    { entry: await store.proposeSettlement(c.env, g(c), actor(b), b as { from?: string; to?: string; amount?: number }) },
+    { entry: await store.proposeSettlement(c.env, g(c), await actor(c, b), b as { from?: string; to?: string; amount?: number }) },
     201,
   );
 });
@@ -147,12 +152,12 @@ ledger.get('/groups/:g/entries/:seq', async (c) => c.json({ versions: await stor
 
 ledger.post('/groups/:g/entries/:seq/confirm', async (c) => {
   const b = await body(c);
-  return c.json({ entry: await store.confirm(c.env, g(c), seqParam(c), actor(b, 'by')) });
+  return c.json({ entry: await store.confirm(c.env, g(c), seqParam(c), await actor(c, b, 'by')) });
 });
 
 ledger.post('/groups/:g/entries/:seq/cancel', async (c) => {
   const b = await body(c);
-  await store.cancel(c.env, g(c), seqParam(c), actor(b, 'by'));
+  await store.cancel(c.env, g(c), seqParam(c), await actor(c, b, 'by'));
   return c.json({ ok: true });
 });
 

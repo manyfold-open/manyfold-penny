@@ -1,4 +1,5 @@
 import { A2AError } from '../a2a';
+import { actorToken } from '../ledger/actor';
 import type { Env } from '../types';
 import { envelope } from './envelope';
 import { editContent, messageContent, plainMentions } from './mentions';
@@ -58,7 +59,12 @@ export function pennyDeps(env: Env): Deps {
   }
 
   return {
-    turn: (item) => runPennyTurn(env, envelope(item.message, item.verdict), item.message.eventId),
+    turn: async (item) => {
+      const m = item.message;
+      // Only a person's own message carries their token; a nudge has no sender and gets none.
+      const token = m.senderId && item.verdict !== 'nudge' ? await actorToken(env, m.roomId, m.senderId) : undefined;
+      return runPennyTurn(env, envelope(m, item.verdict, token), m.eventId);
+    },
     post: async (item, text) => {
       await send(item, text, item.message.eventId);
     },

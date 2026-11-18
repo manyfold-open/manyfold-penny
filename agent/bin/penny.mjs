@@ -16,6 +16,10 @@ Group and members
   members <room> --json '[{"id":"@zack:x","name":"Zack"}]' [--complete]
   guest <room> --name An --sponsor <member>
 
+Every change below (add, edit, delete, settle, confirm, cancel) takes --actor <actor_token>:
+the token from the message's context block. In a real room the ledger refuses a change without
+it, and --by must be that message's sender.
+
 Proposing (nothing counts until someone confirms)
   add <room> --by <member> --json '{"description":"Dinner","category":"food","amount":12000,
       "paidBy":"<member>","split":{"method":"equal","members":[...]},"spentOn":"2026-11-06"}'
@@ -100,6 +104,8 @@ async function main() {
   const room = () => `/groups/${enc(need(a, 'room'))}`;
   const seq = () => need(b, 'entry number');
   const by = () => need(flags.by, '--by');
+  // The actor_token from the message's context block: the ledger's proof that --by sent it.
+  const proof = typeof flags.actor === 'string' ? { actorToken: flags.actor } : {};
 
   switch (command) {
     case 'group':
@@ -118,24 +124,25 @@ async function main() {
     case 'guest':
       return request('POST', `${room()}/guests`, { name: need(flags.name, '--name'), sponsorId: need(flags.sponsor, '--sponsor') });
     case 'add':
-      return request('POST', `${room()}/expenses`, { ...json(need(flags.json, '--json'), '--json'), createdBy: by() });
+      return request('POST', `${room()}/expenses`, { ...json(need(flags.json, '--json'), '--json'), createdBy: by(), ...proof });
     case 'edit':
-      return request('POST', `${room()}/expenses/${seq()}/edit`, { ...json(need(flags.json, '--json'), '--json'), createdBy: by() });
+      return request('POST', `${room()}/expenses/${seq()}/edit`, { ...json(need(flags.json, '--json'), '--json'), createdBy: by(), ...proof });
     case 'delete':
-      return request('POST', `${room()}/expenses/${seq()}/delete`, { createdBy: by() });
+      return request('POST', `${room()}/expenses/${seq()}/delete`, { createdBy: by(), ...proof });
     case 'settle':
       return request('POST', `${room()}/settlements`, {
         createdBy: by(),
         from: need(flags.from, '--from'),
         to: need(flags.to, '--to'),
         amount: Number(need(flags.amount, '--amount')),
+        ...proof,
       });
     case 'pending':
       return request('GET', `${room()}/pending`);
     case 'confirm':
-      return request('POST', `${room()}/entries/${seq()}/confirm`, { by: by() });
+      return request('POST', `${room()}/entries/${seq()}/confirm`, { by: by(), ...proof });
     case 'cancel':
-      return request('POST', `${room()}/entries/${seq()}/cancel`, { by: by() });
+      return request('POST', `${room()}/entries/${seq()}/cancel`, { by: by(), ...proof });
     case 'balances':
       return request('GET', `${room()}/balances`);
     case 'summary':
