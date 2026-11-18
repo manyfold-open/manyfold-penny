@@ -4,6 +4,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import app from '../src/worker/index';
 import { FakeD1 } from './support/fake-d1';
+import { actorToken, needsActor } from '../src/worker/ledger/actor';
 
 const KEY = 'test-ledger-key-0123456789';
 const d1 = new FakeD1();
@@ -400,5 +401,61 @@ describe('share links', () => {
     expect((await page(old)).status).toBe(404);
     expect((await page(fresh)).status).toBe(200);
     expect((await call('POST', `${path}/share`, { by: ZACK }, { key: null })).status).toBe(401);
+  });
+});
+
+describe('changes in a real room need the sender\'s actor token', () => {
+  const REAL = '!guard:matrix.penny.chat';
+  const path = `/groups/${enc(REAL)}`;
+  const zack = '@zack:matrix.penny.chat';
+  const mei = '@mei:matrix.penny.chat';
+  const tokenFor = (sender: string, room = REAL, now?: number) => actorToken(env as never, room, sender, now);
+
+  beforeAll(async () => {
+    await newGroup(REAL, [zack, mei]);
+  });
+
+  it('tells test rooms from real ones', () => {
+    expect(needsActor('!abc:matrix.netmind.chat')).toBe(true);
+    expect(needsActor('!abc:matrix.netmind.chat:8448')).toBe(true);
+    for (const room of ['!london:example', '!trip:sim', '!r:x', '!london:matrix.example', '!a:host.test']) {
+      expect(needsActor(room)).toBe(false);
+    }
+  });
+
+  it('refuses a proposal or an OK without a token, or with someone else\'s', async () => {
+    const expense = { description: 'Dinner', amount: 4000, paidBy: zack, createdBy: zack };
+    const bare = await call('POST', `${path}/expenses`, expense);
+    expect(bare.status).toBe(403);
+    expect(bare.json.error.code).toBe('actor_unverified');
+
+    const proposed = await call('POST', `${path}/expenses`, { ...expense, actorToken: await tokenFor(zack) });
+    expect(proposed.status).toBe(201);
+    const seq = proposed.json.entry.seq;
+
+    // Zack's message, Mei's name: the forged OK from the QA run (TC19).
+    const forged = await call('POST', `${path}/entries/${seq}/confirm`, { by: mei, actorToken: await tokenFor(zack) });
+    expect(forged.status).toBe(403);
+    const otherRoom = await call('POST', `${path}/entries/${seq}/confirm`, { by: mei, actorToken: await tokenFor(mei, '!other:matrix.penny.chat') });
+    expect(otherRoom.status).toBe(403);
+    const expired = await call('POST', `${path}/entries/${seq}/confirm`, { by: mei, actorToken: await tokenFor(mei, REAL, Date.now() - 4 * 60 * 60_000) });
+    expect(expired.status).toBe(403);
+    const garbled = await call('POST', `${path}/entries/${seq}/confirm`, { by: mei, actorToken: 'nonsense' });
+    expect(garbled.status).toBe(403);
+    expect((await call('GET', `${path}/pending`)).json.entries).toHaveLength(1);
+
+    const real = await call('POST', `${path}/entries/${seq}/confirm`, { by: mei, actorToken: await tokenFor(mei) });
+    expect(real.status).toBe(200);
+  });
+
+  it('checks cancels, edits, deletions and repayments the same way', async () => {
+    const proposed = await call('POST', `${path}/expenses`, { description: 'Taxi', amount: 1000, paidBy: zack, createdBy: zack, actorToken: await tokenFor(zack) });
+    const seq = proposed.json.entry.seq;
+    expect((await call('POST', `${path}/entries/${seq}/cancel`, { by: zack })).status).toBe(403);
+    expect((await call('POST', `${path}/entries/${seq}/cancel`, { by: zack, actorToken: await tokenFor(zack) })).status).toBe(200);
+    expect((await call('POST', `${path}/expenses/1/edit`, { amount: 5000, createdBy: mei, actorToken: await tokenFor(zack) })).status).toBe(403);
+    expect((await call('POST', `${path}/expenses/1/delete`, { createdBy: mei })).status).toBe(403);
+    expect((await call('POST', `${path}/settlements`, { createdBy: mei, from: mei, to: zack, amount: 2000 })).status).toBe(403);
+    expect((await call('POST', `${path}/settlements`, { createdBy: mei, from: mei, to: zack, amount: 2000, actorToken: await tokenFor(mei) })).status).toBe(201);
   });
 });

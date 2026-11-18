@@ -45,6 +45,13 @@ The template is designed to be extended and reshaped; these are the load-bearing
      edits, typing, read receipts) asks `MatrixSync` to do it (`POST /matrix`);
    - A2A `messageId`s are derived from stored rows, not random, so retries cannot
      double-bill (`src/worker/chat.ts`).
+   - in a room on a real homeserver, every ledger change (`add`, `edit`, `delete`, `settle`,
+     `confirm`, `cancel`) needs the `actor_token` the gateway signs for that message's room and
+     sender (`src/worker/ledger/actor.ts`); `--by` must be that sender. The model's word for who
+     spoke is never enough. The gateway quotes header-shaped lines in a message body
+     (`defuse` in `src/worker/gateway/envelope.ts`) so nobody can type a second context block.
+     Deploy order: upload `agent/bin/penny.mjs` and `agent/PENNY.md` before the worker, or
+     Penny's changes in real rooms are refused until you do.
 7. **Keep new routes behind the admin gate.** Any route added under `/api/` is protected by
    the `ADMIN_PASSWORD` middleware automatically — do not add exceptions beyond `/api/health`
    and `/api/state` without a reason as good as theirs. The one exception is `/api/ledger/*`:
