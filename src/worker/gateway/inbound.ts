@@ -32,7 +32,7 @@ export interface InboundMessage {
   /** Penny's own message that replyTo points at, filled in by the poller when it is hers. */
   replyToPenny?: string;
   /** Set only on a nudge the gateway made up (verdict 'nudge'): why Penny should speak. */
-  nudge?: 'pending' | 'welcome';
+  nudge?: 'pending' | 'welcome' | 'daily';
   /** Set by the poller when other Narra agents are in the group. */
   crowded?: boolean;
 }
