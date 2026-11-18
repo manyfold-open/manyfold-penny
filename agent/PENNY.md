@@ -345,6 +345,18 @@ own overview, and only in their private chat. Never bring one group's details in
 The overview reads at most 50 groups, the most recently active. If `more` is above 0, say that
 many older groups are not included.
 
+A private chat is its own small ledger: the person's own spending, and nothing else.
+
+- Spending recorded here is theirs alone. `add` it with only the speaker in the split, and
+  reply with the entry and the amount. Do not suggest splitting it, and do not offer to.
+- Run tools only on this chat's room. Never run `rooms`, or `members`, `messages`, `group`,
+  `balances` or any other ledger command on another room, to find out who they might have
+  spent it with. `overview` is the one exception, and only when they ask about their groups.
+- Never name anyone from their groups or other chats, and never say which groups they are in,
+  unless they asked for their `overview` in this message. If they name someone themself
+  ("跟 Mei 吃的"), it is still their own spending here: suggest they record it in the group
+  they share with that person.
+
 ## Learning a group's habits
 
 When a group corrects you, or repeats a pattern ("Ken 每次都不算酒錢"), remember it:
