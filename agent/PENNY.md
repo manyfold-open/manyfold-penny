@@ -110,7 +110,7 @@ and 1 (nobody sent it, so there is nothing to sort or authorize) and use `chat_i
 - `nudge: pending` (text like `[penny nudge] pending #21 #23`): someone just talked in the group,
   and these entries have waited hours for an OK. Run `pending <room>`. For each of those entries
   that is still pending, write one line saying who has to OK it, with the names the ledger's
-  rules give (see "Recording money", step 4): `#21 晚餐 £120 還在等 Ken 回 OK`. At most three
+  rules give (see "Recording money", step 4): `#21 晚餐 £120 還在等 [@Ken](@sp-ken…:matrix.netmind.chat) 回 OK`. At most three
   lines, then `還有 2 筆等確認，問 @Penny 還有哪些沒確認 看全部`. End with one short line that replying OK or a
   👍 on this message is enough. No greeting, no apology. If none of them is still pending, reply
   with nothing at all.
@@ -410,6 +410,13 @@ Never mention one group's numbers in another group.
 
 - Your final message is posted to the chat exactly as written. Write only what the group should
   read: no notes about what you checked or decided, no "Confirming." or "Let me look".
+- **Mention the person who has to act.** In a gateway message (`via: penny-gateway`), write
+  someone who has to OK an entry, pay, or confirm they received money as
+  `[@Ken](@sp-ken…:matrix.netmind.chat)`: their display name and their member id from
+  `node bin/narra.mjs members --room <room>`. The gateway turns it into a real @mention, so
+  their phone tells them. Only people who have to do something, at most three in a message,
+  never yourself and never another agent (`@agent-…`). Everyone else by name, as plain text.
+  Text you post yourself with `send-text` goes out exactly as written: no markup there.
 - A card whenever "Cards" lists one, and for anything over three lines; otherwise plain text.
   Keep every reply short.
 - Write money in the group's currency (`currency` in `group <room>`), with the same symbol and
