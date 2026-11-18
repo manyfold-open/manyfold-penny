@@ -177,6 +177,57 @@ export async function matrixSync(login: MatrixLogin, since: string | null, timeo
   return body;
 }
 
+/** What the queue asks MatrixSync to do as Penny (gateway/deps.ts). */
+export type MatrixOp =
+  | { op: 'send'; roomId: string; txnId: string; content: Record<string, unknown> }
+  | { op: 'typing'; roomId: string; typing: boolean }
+  | { op: 'receipt'; roomId: string; eventId: string };
+
+export type MatrixOpResult =
+  | { ok: true; eventId?: string }
+  /** status 0: nothing was sent (no login, or /sync switched off), so another path may try. */
+  | { ok: false; status: number; errcode?: string; narraCode?: string };
+
+const enc = encodeURIComponent;
+
+export async function matrixCall(login: MatrixLogin, op: MatrixOp): Promise<MatrixOpResult> {
+  const base = `${login.homeserverUrl}/_matrix/client/v3/rooms/${enc(op.roomId)}`;
+  let method = 'PUT';
+  let url: string;
+  let body: unknown;
+  if (op.op === 'send') {
+    url = `${base}/send/m.room.message/${enc(op.txnId)}`;
+    body = op.content;
+  } else if (op.op === 'typing') {
+    url = `${base}/typing/${enc(login.userId)}`;
+    body = op.typing ? { typing: true, timeout: 30_000 } : { typing: false };
+  } else {
+    method = 'POST';
+    url = `${base}/receipt/m.read/${enc(op.eventId)}`;
+    body = {};
+  }
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: { authorization: `Bearer ${login.accessToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    // It may or may not have reached the homeserver: the caller retries the same txn id.
+    return { ok: false, status: 599, errcode: safeErrorText(error instanceof Error ? error.message : error).slice(0, 120) };
+  }
+  const parsed = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.ok) return { ok: true, ...(typeof parsed.event_id === 'string' ? { eventId: parsed.event_id } : {}) };
+  return {
+    ok: false,
+    status: response.status,
+    ...(typeof parsed.errcode === 'string' ? { errcode: parsed.errcode } : {}),
+    ...(typeof parsed.narra_error_code === 'string' ? { narraCode: parsed.narra_error_code } : {}),
+  };
+}
+
 /** The single /sync reader. Addressed as env.MATRIX_SYNC.idFromName('narra'). */
 export class MatrixSync {
   private readonly state: DurableObjectState;
@@ -201,6 +252,9 @@ export class MatrixSync {
 
   /** Called by the cron trigger: keep the loop running, or stop it when switched off. */
   async fetch(request?: Request): Promise<Response> {
+    if (request?.method === 'POST' && new URL(request.url).pathname.endsWith('/matrix')) {
+      return Response.json(await this.act((await request.json()) as MatrixOp));
+    }
     if (request && new URL(request.url).pathname.endsWith('/status')) {
       const sync = (await this.state.storage.get<SyncState>('sync')) ?? null;
       return Response.json({
@@ -217,6 +271,19 @@ export class MatrixSync {
     }
     if ((await this.state.storage.getAlarm()) === null) await this.state.storage.setAlarm(Date.now());
     return Response.json({ running: true });
+  }
+
+  /** Send, type or mark read as Penny. The login never leaves this object. */
+  private async act(op: MatrixOp): Promise<MatrixOpResult> {
+    if (!syncEnabled(this.env)) return { ok: false, status: 0, errcode: 'SYNC_OFF' };
+    try {
+      this.cache.login ??= await fetchLogin(this.env);
+    } catch {
+      return { ok: false, status: 0, errcode: 'NO_LOGIN' };
+    }
+    const result = await matrixCall(this.cache.login, op);
+    if (!result.ok && result.status === 401) this.cache.login = undefined;
+    return result;
   }
 
   async alarm(): Promise<void> {

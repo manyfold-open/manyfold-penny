@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { classify } from '../src/worker/gateway/filter';
 import { parseInbound, type InboundMessage } from '../src/worker/gateway/inbound';
-import { drain, enqueue, MAX_ATTEMPTS, noteText, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
+import { drain, enqueue, noteText, QUIET_NOTE, TURN_RETRY_MS, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
 import { txnId } from '../src/worker/gateway/reply';
 import { tick, TICK_MS, ACTIVE_EVERY_MS, NUDGE_EVERY_MS, PENDING_STALE_MS, type Sink } from '../src/worker/gateway/poller';
 import { envelope } from '../src/worker/gateway/envelope';
@@ -248,23 +248,21 @@ describe('the room queue', () => {
     expect(d.posted).toEqual(['re: 我剛付了 8 塊停車']);
   });
 
-  it('removes the note when Penny stays silent, and falls back to posting if the edit fails', async () => {
+  it('turns the note into a quiet 👌 when Penny stays silent, and falls back to posting if the edit fails', async () => {
     const store = new MemoryStore();
-    for (const t of ['👍', 'OK']) await enqueue(store, { message: msg(t), verdict: 'called', enqueuedAt: Date.now() });
-    const removed: string[] = [];
+    for (const t of ['@Penny 晚餐 80', 'OK']) await enqueue(store, { message: msg(t), verdict: 'called', enqueuedAt: Date.now() });
+    const edits: string[] = [];
     const answers = ['', '已入帳 #21'];
     const d = deps({
       turn: async () => answers.shift() ?? '',
       ack: async (item) => `$note-${item.message.text}`,
-      remove: async (_item, id) => {
-        removed.push(id);
-      },
-      patch: async () => {
-        throw new Error('edit refused');
+      patch: async (_item, id, text) => {
+        edits.push(`${id} ${text}`);
+        if (text !== QUIET_NOTE) throw new Error('edit refused');
       },
     });
     await drain(store, d);
-    expect(removed).toEqual(['$note-👍']);
+    expect(edits).toEqual([`$note-@Penny 晚餐 80 ${QUIET_NOTE}`, '$note-OK 已入帳 #21']);
     expect(d.posted).toEqual(['已入帳 #21']);
   });
 
@@ -279,9 +277,6 @@ describe('the room queue', () => {
       ack: async () => {
         calls.push('ack');
         return '$note';
-      },
-      remove: async () => {
-        calls.push('remove');
       },
       patch: async () => {
         calls.push('patch');
@@ -343,22 +338,47 @@ describe('the room queue', () => {
     expect(d.posted).toEqual(['re: @Penny 嗨']);
   });
 
-  it('holds the room and retries a failed turn, then gives up', async () => {
+  it('holds the room through an outage, says so once, and answers when Penny is back', async () => {
     const store = new MemoryStore();
-    await enqueue(store, { message: msg('first'), verdict: 'called', enqueuedAt: Date.now() });
+    await enqueue(store, { message: msg('@Penny 誰欠誰'), verdict: 'called', enqueuedAt: Date.now() });
     await enqueue(store, { message: msg('second'), verdict: 'called', enqueuedAt: Date.now() });
+    let down = 3;
     const turn = vi.fn(async (item: QueuedMessage) => {
-      if (item.message.text === 'first') throw new Error('agent busy');
-      return 'ok';
+      if (item.message.text === '@Penny 誰欠誰' && down-- > 0) throw new Error('agent busy');
+      return `re: ${item.message.text}`;
     });
-    const d = deps({ turn });
-    for (let i = 1; i < MAX_ATTEMPTS; i++) {
-      expect(await drain(store, d)).toBeGreaterThan(0);
+    const notes: string[] = [];
+    const d = deps({
+      turn,
+      ack: async (_item, text) => {
+        notes.push(`ack ${text}`);
+        return '$note';
+      },
+      patch: async (_item, id, text) => {
+        notes.push(`patch ${id} ${text}`);
+      },
+    });
+    for (const delay of TURN_RETRY_MS.slice(0, 3)) {
+      expect(await drain(store, d)).toBe(delay);
       expect(d.posted).toEqual([]);
     }
     expect(await drain(store, d)).toBeNull();
-    expect(d.posted).toEqual(['ok']);
-    expect(turn).toHaveBeenCalledTimes(MAX_ATTEMPTS + 1);
+    // No typing here, so a note first; then "down" once; then the answer replaces it.
+    expect(notes.map((n) => n.replace(/ 🐶.*$/, ' 🐶…'))).toEqual(['ack 🐶…', 'patch $note 🐶…', 'patch $note re: @Penny 誰欠誰']);
+    expect(notes[1]).toContain('暫時連不上');
+    expect(d.posted).toEqual(['re: second']);
+  });
+
+  it('gives up on a turn that keeps failing once the schedule runs out', async () => {
+    const store = new MemoryStore();
+    await enqueue(store, { message: msg('first'), verdict: 'expense', enqueuedAt: Date.now() });
+    const turn = vi.fn(async () => {
+      throw new Error('agent busy');
+    });
+    const d = deps({ turn });
+    for (const delay of TURN_RETRY_MS) expect(await drain(store, d)).toBe(delay);
+    expect(await drain(store, d)).toBeNull();
+    expect(turn).toHaveBeenCalledTimes(TURN_RETRY_MS.length + 1);
   });
 
   it('resends a refused post on its own schedule without running Penny again', async () => {

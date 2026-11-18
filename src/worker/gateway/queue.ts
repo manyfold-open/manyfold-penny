@@ -29,6 +29,8 @@ export interface QueuedMessage {
   /** Penny's answer, once her turn is done, so a retry after a failed post resends it
    *  instead of running (and billing) another turn. */
   answer?: string;
+  /** The room was told Penny is down for a moment (her turn keeps failing). */
+  toldDown?: boolean;
 }
 
 export interface Store {
@@ -43,15 +45,18 @@ export interface Deps {
   turn(item: QueuedMessage): Promise<string>;
   /** Post an answer into the room. */
   post(item: QueuedMessage, text: string): Promise<void>;
-  /** Post a short "one moment" note at once, so nobody waits in silence. Returns its event id. */
-  ack?(item: QueuedMessage): Promise<string>;
-  /** Turn the note into the answer. */
+  /** Post a short note at once (that she is on it, or that she is down for a moment).
+   *  Returns its event id, so the answer can replace it. */
+  ack?(item: QueuedMessage, text: string): Promise<string>;
+  /** Replace the note's text: with the answer, or with a quiet 👌 when she says nothing. */
   patch?(item: QueuedMessage, ackId: string, text: string): Promise<void>;
-  /** Remove the note when Penny says nothing. */
-  remove?(item: QueuedMessage, ackId: string): Promise<void>;
+  /** Show or stop "Penny is typing…". Resolves false when the room cannot show it. */
+  typing?(item: QueuedMessage, on: boolean): Promise<boolean>;
+  /** Mark the message read, so its sender sees Penny got it. */
+  receipt?(item: QueuedMessage): Promise<void>;
   /** Whether an error is worth another try: false to give up, true for the usual backoff
-   *  (up to MAX_ATTEMPTS), or the delay in ms before the next try, for errors with a
-   *  schedule of their own. `attempts` counts this failed one. */
+   *  (up to MAX_ATTEMPTS, or TURN_RETRY_MS for a failed turn), or the delay in ms before the
+   *  next try, for errors with a schedule of their own. `attempts` counts this failed one. */
   retryable(error: unknown, attempts: number): boolean | number;
   /** A timing sample in seconds: waitS (queued → turn starts), turnS (Penny's turn), answerS
    *  (message sent → answer posted). */
@@ -60,6 +65,12 @@ export interface Deps {
 }
 
 export const MAX_ATTEMPTS = 3;
+/** Pauses between tries when Penny's turn itself fails, which mostly means her sandbox is down
+ *  for a while (on 2026-11-18 Manyfold took 13 minutes to restart it). All within MAX_AGE_MS,
+ *  so the person who asked gets an answer when she is back instead of having to ask again. */
+export const TURN_RETRY_MS = [10_000, 30_000, 60_000, 120_000, 300_000, 600_000];
+/** Typing shows for 30 seconds at a time; refresh it before then while the turn runs. */
+const TYPING_REFRESH_MS = 20_000;
 /** A message waiting longer than this is dropped: answering it now would only confuse. */
 export const MAX_AGE_MS = 30 * 60_000;
 const SEEN_TTL_MS = 24 * 60 * 60_000;
@@ -119,6 +130,16 @@ const HELLO: Record<Script, string[]> = {
   hans: ['🐶 在～', '🐶 嗨～'],
   en: ['🐶 Hi!', '🐶 Here!'],
 };
+
+const DOWN: Record<Script, string> = {
+  hant: '🐶 我這邊暫時連不上，好了馬上回你。',
+  hans: '🐶 我这边暂时连不上，好了马上回你。',
+  en: "🐶 I can't reach my notebook right now. I'll answer as soon as I'm back.",
+};
+
+/** What a note becomes when Penny ends up saying nothing. Deleting it would show
+ *  "Penny recalled a message" to everyone. */
+export const QUIET_NOTE = '🐶👌';
 
 const FAILED: Record<Script, string> = {
   hant: '🐶 剛剛卡住了，請再說一次。',
@@ -180,10 +201,11 @@ function pick<T>(list: T[], seed: string): T {
  *  speaker's script when the message shows it; Traditional Chinese otherwise. Small talk gets
  *  no note at all (null): she just answers, as a person would. */
 export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working'): string | null;
-export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'failed'): string;
-export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' | 'failed'): string | null {
+export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'failed' | 'down'): string;
+export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' | 'failed' | 'down'): string | null {
   const script = scriptOf(item.message.text);
   if (kind === 'failed') return FAILED[script];
+  if (kind === 'down') return DOWN[script];
   const intent = intentOf(item);
   if (intent === 'chat') return item.message.crowded ? pick(HELLO[script], item.message.eventId) : null;
   return pick(NOTES[intent][script], item.message.eventId);
@@ -214,31 +236,29 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
     const [key, item] = entry;
     if (Date.now() - item.enqueuedAt > MAX_AGE_MS) {
       deps.log(`dropped stale message ${item.message.eventId}`);
+      if (item.ackId && deps.patch) await deps.patch(item, item.ackId, noteText(item, 'failed')).catch(() => undefined);
       await store.delete(key);
       continue;
     }
     const startedAt = Date.now();
-    if (item.attempts === 0) deps.timing?.('waitS', (startedAt - item.enqueuedAt) / 1000);
+    if (item.attempts === 0) {
+      deps.timing?.('waitS', (startedAt - item.enqueuedAt) / 1000);
+      if (item.verdict !== 'nudge' && item.message.kind !== 'reaction') await deps.receipt?.(item).catch(() => undefined);
+    }
+    let phase: 'turn' | 'post' = 'post';
     try {
-      // Someone talked to Penny directly: show that she is on it before her turn starts.
-      // Not for a reaction: a 👍 on a message with nothing pending gets no answer, and a note
-      // that is posted and then deleted shows up in the room as "Penny recalled a message".
-      // Not for small talk either: nobody says "let me check" before answering a "hi".
-      if (wantsNote(item) && !item.ackId && item.answer === undefined && deps.ack && noteText(item, 'working')) {
-        try {
-          const ackId = await deps.ack(item);
-          if (ackId) {
-            item.ackId = ackId;
-            await store.put(key, item);
-          }
-        } catch (error) {
-          deps.log(`could not post the note for ${item.message.eventId}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
       let answer = item.answer;
       if (answer === undefined) {
+        // Show that Penny is on it before her turn starts (see showWorking).
+        const stop = await showWorking(store, key, item, deps);
+        phase = 'turn';
         const turnStarted = Date.now();
-        answer = await deps.turn(item);
+        try {
+          answer = await deps.turn(item);
+        } finally {
+          await stop();
+        }
+        phase = 'post';
         deps.timing?.('turnS', (Date.now() - turnStarted) / 1000);
         item.answer = answer;
         await store.put(key, item);
@@ -253,8 +273,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         }
       } else if (posted) {
         await deps.post(item, answer);
-      } else if (item.ackId && deps.remove) {
-        await deps.remove(item, item.ackId).catch(() => undefined);
+      } else if (item.ackId && deps.patch) {
+        await deps.patch(item, item.ackId, QUIET_NOTE).catch(() => undefined);
       }
       deps.log(`answered ${item.message.eventId} (${posted ? 'posted' : 'silent'})`);
       if (posted) deps.timing?.('answerS', (Date.now() - Date.parse(item.message.time)) / 1000);
@@ -263,7 +283,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       const attempts = item.attempts + 1;
       const message = error instanceof Error ? error.message : String(error);
       const retry = deps.retryable(error, attempts);
-      if (retry === false || (retry === true && attempts >= MAX_ATTEMPTS)) {
+      const turnDelay = phase === 'turn' && retry === true ? TURN_RETRY_MS[attempts - 1] : undefined;
+      if (retry === false || (retry === true && (phase === 'turn' ? turnDelay === undefined : attempts >= MAX_ATTEMPTS))) {
         deps.log(`gave up on ${item.message.eventId} after ${attempts} attempt(s): ${message}`);
         if (item.ackId && deps.patch) {
           await deps.patch(item, item.ackId, noteText(item, 'failed')).catch(() => undefined);
@@ -272,13 +293,55 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         continue;
       }
       deps.log(`retrying ${item.message.eventId} (attempt ${attempts}): ${message}`);
-      await store.put(key, { ...item, attempts });
+      const next: QueuedMessage = { ...item, attempts };
+      // Her turn failed twice: someone is waiting, so say she is down for a moment. The answer
+      // replaces this note when she is back.
+      if (phase === 'turn' && attempts >= 2 && !item.toldDown && wantsNote(item)) {
+        next.toldDown = true;
+        try {
+          if (item.ackId && deps.patch) await deps.patch(item, item.ackId, noteText(item, 'down'));
+          else if (deps.ack) next.ackId = (await deps.ack(item, noteText(item, 'down'))) || undefined;
+        } catch (e) {
+          deps.log(`could not say Penny is down for ${item.message.eventId}: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      await store.put(key, next);
       // Hold the whole room: the next message may depend on this one.
-      return typeof retry === 'number' ? retry : 5_000 * 2 ** (attempts - 1);
+      return typeof retry === 'number' ? retry : (turnDelay ?? 5_000 * 2 ** (attempts - 1));
     }
   }
   const [left] = await store.list({ prefix: 'q:', limit: 1 });
   return left ? 0 : null;
+}
+
+/**
+ * Before Penny's turn: "Penny is typing…" where the room can show it, which adds no message.
+ * A note instead in a group with other agents (it holds her place, see wantsNote), or for
+ * someone who called her where typing cannot show. Returns what stops the typing afterwards.
+ */
+async function showWorking(store: Store, key: string, item: QueuedMessage, deps: Deps): Promise<() => Promise<void>> {
+  const done = async () => undefined;
+  if (item.ackId || item.verdict === 'nudge') return done;
+  const note = wantsNote(item) ? noteText(item, 'working') : null;
+  let typing = false;
+  if (!(item.message.crowded && note) && deps.typing) typing = await deps.typing(item, true).catch(() => false);
+  if (!typing && note && deps.ack) {
+    try {
+      const ackId = await deps.ack(item, note);
+      if (ackId) {
+        item.ackId = ackId;
+        await store.put(key, item);
+      }
+    } catch (error) {
+      deps.log(`could not post the note for ${item.message.eventId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!typing) return done;
+  const timer = setInterval(() => void deps.typing?.(item, true).catch(() => false), TYPING_REFRESH_MS);
+  return async () => {
+    clearInterval(timer);
+    await deps.typing?.(item, false).catch(() => false);
+  };
 }
 
 /** The Durable Object. Addressed by room id: env.ROOM_QUEUE.idFromName(roomId). */
