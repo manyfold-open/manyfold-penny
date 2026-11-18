@@ -21,6 +21,7 @@ import { narraApi, type NarraApi, type NarraEvent, type NarraRoom } from './narr
 import { NarraError } from './reply';
 import type { Store } from './queue';
 import { addSample, summarizeAll, type Samples } from './metrics';
+import { dailyFromLedger } from './daily';
 
 export const TICK_MS = 4_000;
 export const ACTIVE_EVERY_MS = 8_000;
@@ -59,6 +60,8 @@ export interface Sink {
   /** Entry numbers in this group that are still pending and were proposed before `before`
    *  (ISO time). Without it, Penny sends no reminders. */
   stalePending?(roomId: string, before: string): Promise<number[]>;
+  /** Groups due their daily recap now (see daily.ts). Without it, Penny sends none. */
+  dailyDue?(now: number): Promise<{ roomId: string; date: string }[]>;
   /** Whether the ledger already has this group. Without it, Penny sends no welcome. */
   knownGroup?(roomId: string): Promise<boolean>;
   deliver(message: InboundMessage, verdict: Verdict): Promise<void>;
@@ -70,6 +73,9 @@ export interface Sink {
 const roomKey = (id: string) => `room:${id}`;
 const nudgedKey = (id: string) => `nudged:${id}`;
 const welcomedKey = (id: string) => `welcomed:${id}`;
+const dailyKey = (id: string) => `daily:${id}`;
+/** How often the poller asks the ledger which groups are due their daily recap. */
+export const DAILY_CHECK_MS = 60_000;
 
 interface Nudged {
   at: number;
@@ -78,16 +84,16 @@ interface Nudged {
 }
 
 /** A message nobody wrote: the gateway asking Penny to speak up in a group on her own. */
-function nudgeMessage(room: NarraRoom, kind: 'pending' | 'welcome', now: number, seqs: number[] = []): InboundMessage {
+function nudgeMessage(room: NarraRoom, kind: 'pending' | 'welcome' | 'daily', now: number, about: (number | string)[] = []): InboundMessage {
   return {
     roomId: room.roomId,
     roomName: room.title,
     chatType: 'group',
-    // Derived from what it is about, so the same reminder cannot be queued or billed twice.
-    eventId: `nudge:${kind}:${room.roomId}${seqs.length ? `:${seqs.join(',')}` : ''}`,
+    // Derived from what it is about, so the same nudge cannot be queued or billed twice.
+    eventId: `nudge:${kind}:${room.roomId}${about.length ? `:${about.join(',')}` : ''}`,
     senderId: '',
     senderName: '',
-    text: `[penny nudge] ${kind}${seqs.map((n) => ` #${n}`).join('')}`,
+    text: `[penny nudge] ${kind}${about.map((a) => (typeof a === 'number' ? ` #${a}` : ` ${a}`)).join('')}`,
     time: new Date(now).toISOString(),
     mentions: [],
     nudge: kind,
@@ -236,6 +242,26 @@ export async function ingest(store: Store, sink: Sink, rooms: SyncedRoom[], now 
   }
 }
 
+/** Once a minute: queue the daily recap for each group that is due it and has not had today's. */
+async function sendDaily(store: Store, sink: Sink, rooms: NarraRoom[], now: number): Promise<void> {
+  if (!sink.dailyDue || now - ((await store.get<number>('dailyAt')) ?? 0) < DAILY_CHECK_MS) return;
+  await store.put('dailyAt', now);
+  let due: { roomId: string; date: string }[];
+  try {
+    due = await sink.dailyDue(now);
+  } catch (error) {
+    sink.log(`daily check failed: ${(error as Error).message}`);
+    return;
+  }
+  for (const { roomId, date } of due) {
+    const room = rooms.find((r) => r.roomId === roomId && r.type === 'group');
+    if (!room || (await store.get<string>(dailyKey(roomId))) === date) continue;
+    await sink.deliver(nudgeMessage(room, 'daily', now, [date]), 'nudge');
+    await store.put(dailyKey(roomId), date);
+    sink.log(`daily recap for ${roomId} (${date})`);
+  }
+}
+
 /** One step. Returns how long to wait before the next one. */
 export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.now()): Promise<number> {
   let state = await store.get<RoomsState>('rooms');
@@ -249,6 +275,8 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
       if (!state) return BACKOFF_MS;
     }
   }
+
+  await sendDaily(store, sink, state.rooms, now);
 
   // The room that is most overdue. New rooms start due now.
   let due: { room: NarraRoom; s: RoomState } | null = null;
@@ -406,6 +434,7 @@ export class NarraPoller {
           .all<{ seq: number }>();
         return results.map((r) => r.seq);
       },
+      dailyDue: (now) => dailyFromLedger(env, now),
       async knownGroup(roomId) {
         return Boolean(await env.DB.prepare('SELECT 1 AS g FROM ledger_groups WHERE id = ?').bind(roomId).first());
       },
