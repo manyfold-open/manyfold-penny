@@ -761,6 +761,9 @@ describe('what reaches Penny and what she posts', () => {
       ['Mei is involved in #5, and Zack proposed it, so Mei can confirm.已入帳 #5 計程車 £10.00 🐶', '已入帳 #5 計程車 £10.00 🐶'],
       ['Test format message: skip steps 0–1 and members. Check pending.Ken is involved in #5, so they can confirm.#5 計程車 £10 已經由 Mei 確認入帳了', '#5 計程車 £10 已經由 Mei 確認入帳了'],
       ['Mei can confirm this one now.Recorded #5 Taxi £10.00', 'Recorded #5 Taxi £10.00'],
+      // Seen again after the PENNY.md rule against it was uploaded: the cut is what holds.
+      ['Test format has no actor token.#9 咖啡 £12.40，Zack 付', '#9 咖啡 £12.40，Zack 付'],
+      ['Pending, so cancel and re-add.已改好，舊的 #9 取消，新的是 #10：', '已改好，舊的 #9 取消，新的是 #10：'],
     ];
     for (const [answer, posted] of seen) expect(stripLeakedNotes(answer).text).toBe(posted);
     const untouched = [
