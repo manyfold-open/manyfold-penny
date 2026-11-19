@@ -118,7 +118,7 @@ app.onError((error, c) => {
 /* ───────── routes ───────── */
 
 app.get('/api/health', (c) =>
-  c.json({ status: 'ok', service: SERVICE, time: new Date().toISOString() }),
+  c.json({ status: 'ok', service: SERVICE, version: 'filter-v2', time: new Date().toISOString() }),
 );
 
 app.get('/api/state', async (c) => {

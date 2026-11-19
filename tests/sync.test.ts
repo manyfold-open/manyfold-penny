@@ -225,9 +225,10 @@ describe("Penny's note in a group with other agents", () => {
     expect(noteText({ message: msg('@Penny hello', true) }, 'working')).toMatch(/🐶/);
   });
 
-  it('also notes an expense picked up without @Penny there, but never a reaction', () => {
+  it('only posts a note when Penny was directly called, never for speculative unmentioned expenses or reactions', () => {
+    expect(wantsNote({ message: msg('@Penny 晚餐 80', true), verdict: 'called' })).toBe(true);
     expect(wantsNote({ message: msg('我剛付了晚餐 80'), verdict: 'expense' })).toBe(false);
-    expect(wantsNote({ message: msg('我剛付了晚餐 80', true), verdict: 'expense' })).toBe(true);
+    expect(wantsNote({ message: msg('我剛付了晚餐 80', true), verdict: 'expense' })).toBe(false);
     expect(wantsNote({ message: { ...msg('👍', true), kind: 'reaction' }, verdict: 'called' })).toBe(false);
     expect(wantsNote({ message: msg('誰欠誰', true), verdict: 'question' })).toBe(false);
   });

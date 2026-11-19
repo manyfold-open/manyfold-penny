@@ -113,7 +113,7 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   const digits = (/\d/.test(text) && AMOUNT.test(text)) || CN_AMOUNT.test(text);
   if (digits) {
     if (SPEND_ACTION_WORDS.test(text)) return 'expense';
-    if (CURRENCY_SYMBOL.test(text) && !PRICE_COMMENTARY.test(text)) return 'expense';
+    if (CURRENCY_SYMBOL.test(text) && !PRICE_COMMENTARY.test(text) && text.trim().length <= 24) return 'expense';
   }
 
   return 'skip';
