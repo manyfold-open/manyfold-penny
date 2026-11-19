@@ -221,7 +221,7 @@ export function intentOf(item: Pick<QueuedMessage, 'message'>): Intent | 'chat' 
  */
 export function wantsNote(item: Pick<QueuedMessage, 'message' | 'verdict'>): boolean {
   if (item.message.kind === 'reaction') return false;
-  return item.verdict === 'called' || (item.message.crowded === true && item.verdict === 'expense');
+  return item.verdict === 'called';
 }
 
 /** Same message, same pick: a retried note never changes its words. */

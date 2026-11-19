@@ -156,6 +156,7 @@ describe('the filter', () => {
       'The new iPhone costs £999, way too expensive',
       '這張演唱會票要 £150 太貴不想買',
       'Samsung UK 加碼折 £300 優惠碼',
+      'I saw a cool jacket for £300 in Soho today',
     ]) {
       expect(classify(msg(text), BOT), text).toBe('skip');
     }
