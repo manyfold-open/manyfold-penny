@@ -96,9 +96,11 @@ run step 1 with `--mentioned`. Skip step 0 for these messages; it is for gateway
      "誰欠誰", "我還欠你多少", "我要轉給誰", "這趟總共花多少", "who owes who"): go on, and answer it
      as if they had asked you, in the same short form. If the group is not in the ledger yet, or
      the ledger has nothing that answers it, reply with nothing at all: they were asking each other.
-   - Anything else (chatter, plans, other questions to each other, links, money talk with no amount or
-     payer): stop here. Run no tool and reply with nothing at all. The message stays in the room's
-     history, and you read it from there when someone asks (see "Reading the chat history").
+   - Anything else (chatter, plans, other questions to each other, links, price complaints or sticker
+     shock with no purchase or split like "一件外套要 £300 誰買得下手" / "Rent is £2200 a month", deal
+     or budget talk, money talk with no amount or payer): stop here. Run no tool and reply with
+     nothing at all. The message stays in the room's history, and you read it from there when someone
+     asks (see "Reading the chat history").
 1. **Check permission.** `node bin/narra.mjs authorize --room <room> --sender <sender>
    --event <message_id>`, adding `--mentioned` when the message mentions you, which every group
    message from the Manyfold channel does (see above). If it does not

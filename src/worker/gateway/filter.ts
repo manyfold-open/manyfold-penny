@@ -45,8 +45,11 @@ const CN_DIGIT = '[一二三四五六七八九兩两]';
 const CN_AMOUNT = new RegExp(
   `${CN_DIGIT}[十百千萬万]|十${CN_DIGIT}?\\s*(?:元|塊|块)|[一二三四五六七八九十兩两]\\s*(?:元|塊|块|镑|鎊|英鎊|英镑|刀)`,
 );
-const MONEY_WORDS =
-  /付|花了|花費|花费|買了|买了|請客|请客|出了|我出|墊|垫|轉給|转给|轉了|转了|還給|还给|還了|还了|欠|分帳|分账|平分|AA|收據|收据|發票|发票|paid|spent|\bowe[sd]?\b|split|refund|venmo|transfer|[£$€¥]/i;
+const SPEND_ACTION_WORDS =
+  /付|花了|花費|花费|買了|买了|刷了|請客|请客|出了|我出|墊|垫|轉給|转给|轉了|转了|還給|还给|還了|还了|欠|分帳|分账|平分|AA|算一份|收據|收据|發票|发票|paid|spent|bought|charged|\bowe[sd]?\b|split|refund|venmo|transfer/i;
+const CURRENCY_SYMBOL = /[£$€¥]/;
+const PRICE_COMMENTARY =
+  /誰買得下手|谁买得下手|買不下手|买不下手|買不起|买不起|太貴|太贵|超貴|超贵|好貴|好贵|真貴|真贵|貴死|贵死|不買|不买|不想買|不想买|才不買|才不买|賣超貴|卖超贵|賣這麼貴|卖这么贵|要賣|要卖|要價|要价|定價|定价|原價|原价|標價|标价|售價|售价|房租|月租|年薪|月薪|起薪|預算|预算|折扣|優惠碼|优惠码|特價|特价|促銷|促销|加碼折|\b(?:too\s+expensive|way\s+too\s+much|so\s+expensive|overpriced|pricey|can'?t\s+afford|wouldn'?t\s+buy|not\s+buying|who\s+(?:would|buys?)|costs?\s+(?:like\s+)?[£$€¥]|retails?\s+(?:for|at)|starting\s+at|per\s+month|\/month|a\s+month|rent\s+is|salary|budget|discount|voucher|promo\s*code)\b/i;
 
 // A question to the group about who owes what, which Penny can answer from the ledger:
 // "誰欠誰", "我還欠你多少", "我要轉給誰", "這趟總共花多少", "錢怎麼分", "要結算了嗎", "who owes who".
@@ -108,7 +111,10 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   if (QUESTION.some((q) => q.test(text))) return 'question';
 
   const digits = (/\d/.test(text) && AMOUNT.test(text)) || CN_AMOUNT.test(text);
-  if (digits && MONEY_WORDS.test(text)) return 'expense';
+  if (digits) {
+    if (SPEND_ACTION_WORDS.test(text)) return 'expense';
+    if (CURRENCY_SYMBOL.test(text) && !PRICE_COMMENTARY.test(text)) return 'expense';
+  }
 
   return 'skip';
 }

@@ -144,9 +144,28 @@ describe('the filter', () => {
     }
   });
 
-  it('skips chatter, links and money talk with no amount', () => {
-    for (const text of ['好啊今天去哪吃', '明天 8 點集合', '晚餐要付現嗎', 'https://arena42.ai 看一下', 'pennyworth 是誰']) {
+  it('skips chatter, links, price commentary, and money talk with no amount', () => {
+    for (const text of [
+      '好啊今天去哪吃',
+      '明天 8 點集合',
+      '晚餐要付現嗎',
+      'https://arena42.ai 看一下',
+      'pennyworth 是誰',
+      '那家店東西賣超貴 一件外套要 £300 誰買得下手',
+      'Rent in Shoreditch is £2200 a month now 😭',
+      'The new iPhone costs £999, way too expensive',
+      '這張演唱會票要 £150 太貴不想買',
+      'Samsung UK 加碼折 £300 優惠碼',
+    ]) {
       expect(classify(msg(text), BOT), text).toBe('skip');
+    }
+    for (const text of [
+      'NT$500 門票',
+      'Boots £15',
+      '剛喝珍珠奶茶加雞排我幫大家一起刷了 £24.50，Zack 跟 Alice 算一份，晚點轉我',
+      '剛剛吃超貴的火鍋我先付了 £120 大家平分',
+    ]) {
+      expect(classify(msg(text), BOT), text).toBe('expense');
     }
   });
 
