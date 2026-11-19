@@ -80,12 +80,17 @@ const MAX_QUEUE = 200;
 const pad = (n: number) => String(n).padStart(16, '0');
 
 /** Answers that mean "say nothing". Posting them would only put noise in the chat. */
-const SILENCE = /^\s*(?:\(empty response\)|no response(?: requested)?\.?|\[no reply\]|\.{0,3})\s*$/i;
+const SILENCE =
+  /^\s*(?:\(empty response\)|no[\s_-]+response(?:[\s_-]+requested)?|\[?\s*(?:no[\s_-]+reply|silence)\s*\]?)[.。]?\s*$|^\s*\.{0,3}\s*$/i;
 // A short note to herself in brackets about saying nothing: "(No reply. Penny stays quiet here.)",
-// "[silent]", "(No response needed)". Brackets with only that inside are never meant for the room.
+// "[silent]", "(No response needed)", "(No_reply)". Brackets with only that inside are never meant for the room.
 const SILENT_NOTE =
-  /^\s*[([（【]\s*(?:no (?:reply|response|answer)|silen(?:t|ce)|stay(?:s|ing)? (?:quiet|silent)|不回覆|不回复|不回應|不回应|保持安靜|保持安静)[^)\]）】\n]{0,80}[)\]）】]\s*$/i;
-export const isSilence = (answer: string) => SILENCE.test(answer) || SILENT_NOTE.test(answer);
+  /^\s*[([（【]\s*(?:no[\s_-]+(?:reply|response|answer)|silen(?:t|ce)|stay(?:s|ing)?[\s_-]+(?:quiet|silent)|不回覆|不回复|不回應|不回应|保持安靜|保持安静)[^)\]）】\n]{0,80}[)\]）】][.。]?\s*$/i;
+
+export const isSilence = (answer: string): boolean => {
+  const trimmed = answer.trim().replace(/^`([^`]*)`([.。]?)$/, '$1$2');
+  return SILENCE.test(trimmed) || SILENT_NOTE.test(trimmed);
+};
 
 /**
  * Penny's notes to herself sometimes reach the answer glued in front of it, with no space where
@@ -95,7 +100,8 @@ export const isSilence = (answer: string) => SILENCE.test(answer) || SILENT_NOTE
  * Chinese. Only a leading English run on the first line is cut, and only when the cut ends at
  * such a seam, so a URL ("netmind-ai.workers.dev") or an amount ("£3.33") is never touched.
  */
-const SEAM = /[a-z0-9)'"][.!?:](?=[A-Z#\u3400-\u9fff])/g;
+const SEAM =
+  /[a-z0-9)'"][.!?:](?=[A-Z#\u3400-\u9fff]|\[(?:NO[\s_-]+REPLY|no[\s_-]+reply|No[\s_-]+[Rr]eply|SILENCE|silence|Silence)\])/g;
 
 export function stripLeakedNotes(answer: string): { text: string; cut: string } {
   const firstLine = answer.split('\n', 1)[0];

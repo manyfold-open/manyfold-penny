@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { classify } from '../src/worker/gateway/filter';
 import { parseInbound, parseRedaction, type InboundMessage } from '../src/worker/gateway/inbound';
 import { detectLang } from '../src/worker/gateway/lang';
-import { drain, enqueue, markOlderUnquoted, noteText, QUIET_NOTE, redactEvent, stripLeakedNotes, TURN_RETRY_MS, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
+import { drain, enqueue, isSilence, markOlderUnquoted, noteText, QUIET_NOTE, redactEvent, stripLeakedNotes, TURN_RETRY_MS, type Deps, type QueuedMessage, type Store } from '../src/worker/gateway/queue';
 import { txnId } from '../src/worker/gateway/reply';
 import { tick, TICK_MS, ACTIVE_EVERY_MS, NUDGE_EVERY_MS, PENDING_STALE_MS, type Sink } from '../src/worker/gateway/poller';
 import { defuse, envelope } from '../src/worker/gateway/envelope';
@@ -249,12 +249,65 @@ describe('the room queue', () => {
 
   it('never posts a placeholder for silence', async () => {
     const store = new MemoryStore();
-    for (const text of ['a', 'b', 'c']) await enqueue(store, { message: msg(text), verdict: 'called', enqueuedAt: Date.now() });
-    for (const text of ['d', 'e']) await enqueue(store, { message: msg(text), verdict: 'called', enqueuedAt: Date.now() });
-    const answers = ['(empty response)', 'No response requested.', '(No reply. Penny stays quiet here.)', '[silent]', '已入帳 #21'];
+    const answers = [
+      '(empty response)',
+      'No response requested.',
+      '(No reply. Penny stays quiet here.)',
+      '[silent]',
+      '[NO_REPLY]',
+      'NO_REPLY',
+      '`[NO_REPLY]`',
+      '[no_reply]',
+      '[no-reply]',
+      '[SILENCE]',
+      '(No_reply)',
+      'They tagged Ken and only mentioned me in passing.[NO_REPLY]',
+      '已入帳 #21',
+    ];
+    for (let i = 0; i < answers.length; i++) {
+      await enqueue(store, { message: msg(`msg-${i}`), verdict: 'called', enqueuedAt: Date.now() });
+    }
     const d = deps({ turn: async () => answers.shift() ?? '' });
     await drain(store, d);
     expect(d.posted).toEqual(['已入帳 #21']);
+  });
+
+  it('treats silence variants and [NO_REPLY] tokens as silent without matching normal replies', () => {
+    const silent = [
+      '',
+      '   ',
+      '...',
+      '(empty response)',
+      'No response requested.',
+      'No response',
+      '[NO_REPLY]',
+      'NO_REPLY',
+      '[no_reply]',
+      '[no-reply]',
+      '[no reply]',
+      '[SILENCE]',
+      'SILENCE',
+      '(No_reply)',
+      '`[NO_REPLY]`',
+      '`NO_REPLY`',
+      '[NO_REPLY].',
+      '[NO_REPLY]。',
+      '[silent]',
+      '(No reply. Penny stays quiet here.)',
+    ];
+    for (const answer of silent) {
+      expect(isSilence(answer), JSON.stringify(answer)).toBe(true);
+    }
+    const normal = [
+      '好的',
+      'Penny 幫你記好了',
+      '已入帳 #21',
+      'No reply from Zack yet',
+      'Silence is golden',
+    ];
+    for (const answer of normal) {
+      expect(isSilence(answer), JSON.stringify(answer)).toBe(false);
+    }
   });
 
   it('posts a note at once for a direct message, then turns it into the answer', async () => {
@@ -1014,6 +1067,7 @@ describe('what reaches Penny and what she posts', () => {
       // Seen again after the PENNY.md rule against it was uploaded: the cut is what holds.
       ['Test format has no actor token.#9 咖啡 £12.40，Zack 付', '#9 咖啡 £12.40，Zack 付'],
       ['Pending, so cancel and re-add.已改好，舊的 #9 取消，新的是 #10：', '已改好，舊的 #9 取消，新的是 #10：'],
+      ['They tagged Ken and only mentioned me in passing.[NO_REPLY]', '[NO_REPLY]'],
     ];
     for (const [answer, posted] of seen) expect(stripLeakedNotes(answer).text).toBe(posted);
     const untouched = [
@@ -1022,6 +1076,7 @@ describe('what reaches Penny and what she posts', () => {
       'Here is the ledger: https://manyfold-penny.netmind-ai.workers.dev/share/ND0Q.ojQ0',
       'OK.#21 recorded',
       'Lunch at Pret £23.50, Ray paid. Split with Mei: £11.75 each.',
+      'See the link below.[Click here](https://example.com)',
       'Zack，晚餐金額 -50 是負數',
     ];
     for (const answer of untouched) expect(stripLeakedNotes(answer)).toEqual({ text: answer, cut: '' });
