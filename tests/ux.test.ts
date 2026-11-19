@@ -85,16 +85,33 @@ describe('sending as Penny', () => {
     return { e, ops };
   };
 
-  it('sends through Matrix, quoting the message it answers in a group', async () => {
+  it('sends through Matrix with smart quoting only when shouldQuote is true in a group', async () => {
     const { e, ops } = env(() => ({ ok: true, eventId: '$sent' }));
-    await pennyDeps(e).post(item(msg('@Penny 誰欠誰')), `[@Ken](${KEN}) 要轉 £30`);
-    const op = ops[0] as Extract<MatrixOp, { op: 'send' }>;
-    expect(op.content['m.relates_to']).toEqual({ 'm.in_reply_to': { event_id: '$e1' } });
-    expect(op.content['m.mentions']).toEqual({ user_ids: [KEN] });
-    // Not in a private chat, not for a nudge.
-    await pennyDeps(e).post(item(msg('誰欠誰', { chatType: 'dm' })), 'x');
-    await pennyDeps(e).post(item(msg('[penny nudge] pending #1', { eventId: 'nudge:pending:!a:x:1' }), 'nudge'), 'x');
-    expect(ops.slice(1).map((o) => (o as Extract<MatrixOp, { op: 'send' }>).content['m.relates_to'])).toEqual([undefined, undefined]);
+    // Latest human message in the room (shouldQuote false/omitted): no quote bubble.
+    await pennyDeps(e).post(item(msg('@Penny 誰欠誰', { shouldQuote: false })), `[@Ken](${KEN}) 要轉 £30`);
+    const latestOp = ops[0] as Extract<MatrixOp, { op: 'send' }>;
+    expect(latestOp.content['m.relates_to']).toBeUndefined();
+    expect(latestOp.content['m.mentions']).toEqual({ user_ids: [KEN] });
+
+    // Older / non-latest message (shouldQuote true): quotes the message it answers.
+    await pennyDeps(e).post(item(msg('@Penny 誰欠誰', { shouldQuote: true })), `[@Ken](${KEN}) 要轉 £30`);
+    const quotedOp = ops[1] as Extract<MatrixOp, { op: 'send' }>;
+    expect(quotedOp.content['m.relates_to']).toEqual({ 'm.in_reply_to': { event_id: '$e1' } });
+    expect(quotedOp.content['m.mentions']).toEqual({ user_ids: [KEN] });
+
+    // Never quotes in DM, for a nudge, for a reaction, for non-$ ids, or for @agent-* senders.
+    await pennyDeps(e).post(item(msg('誰欠誰', { chatType: 'dm', shouldQuote: true })), 'x');
+    await pennyDeps(e).post(item(msg('[penny nudge] pending #1', { eventId: 'nudge:pending:!a:x:1', shouldQuote: true }), 'nudge'), 'x');
+    await pennyDeps(e).post(item(msg('👍', { kind: 'reaction', shouldQuote: true })), 'x');
+    await pennyDeps(e).post(item(msg('hi', { eventId: 'local-1', shouldQuote: true })), 'x');
+    await pennyDeps(e).post(item(msg('hi', { senderId: '@agent-1234abcd:matrix.netmind.chat', shouldQuote: true })), 'x');
+    expect(ops.slice(2).map((o) => (o as Extract<MatrixOp, { op: 'send' }>).content['m.relates_to'])).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
   });
 
   it('falls back to the chat API, in plain text, only when Matrix sent nothing', async () => {
@@ -171,12 +188,20 @@ describe('typing instead of a note', () => {
     expect(d.calls).toEqual(['read', 'ack 🐶', 'patch $note re: @Penny 誰欠誰']);
   });
 
-  it('falls back to a note when typing cannot show', async () => {
+  it('falls back to a note in the speaker\'s detectedLang when typing cannot show', async () => {
     const store = new MemoryStore();
-    await enqueue(store, { message: msg('@Penny 誰欠誰'), verdict: 'called', enqueuedAt: Date.now() });
-    const d = base({ typing: async () => false });
+    await enqueue(store, { message: msg('OK', { detectedLang: 'zh-Hans' }), verdict: 'called', enqueuedAt: Date.now() });
+    const d = base({
+      typing: async () => false,
+      ack: async (_i, t) => {
+        d.calls.push(`ack ${t}`);
+        return '$note';
+      },
+    });
     await drain(store, d);
-    expect(d.calls).toEqual(['read', 'ack 🐶', 'patch $note re: @Penny 誰欠誰']);
+    expect(d.calls[0]).toBe('read');
+    expect(['ack 🐶 好，处理中…', 'ack 🐶 收到～', 'ack 🐶 好哦，马上弄']).toContain(d.calls[1]);
+    expect(d.calls[2]).toBe('patch $note re: OK');
   });
 
   it('neither types nor marks anything read for a nudge', async () => {

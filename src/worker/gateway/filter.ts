@@ -83,10 +83,20 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   if (message.replyToPenny !== undefined) return 'called';
 
   const text = message.text;
+  const trimmed = text.trimStart();
+  const mentionsOthers = message.mentions.some((id) => id !== bot.matrixId);
+  const startsWithBot =
+    trimmed.startsWith(bot.matrixId) ||
+    bot.names.some((name) => name && new RegExp(`^@${escape(name)}(?![\\p{L}\\p{N}])`, 'iu').test(trimmed));
+  const aimedElsewhere = mentionsOthers && trimmed.startsWith('@') && !startsWithBot;
   const mentioned =
     message.mentions.includes(bot.matrixId) ||
     text.includes(bot.matrixId) ||
-    bot.names.some((name) => name && new RegExp(`@?${escape(name)}(?![\\p{L}\\p{N}])`, 'iu').test(text));
+    bot.names.some(
+      (name) =>
+        name &&
+        new RegExp(`${aimedElsewhere ? '@' : '@?'}${escape(name)}(?![\\p{L}\\p{N}])`, 'iu').test(text),
+    );
   if (mentioned) return 'called';
 
   // A photo may be a receipt. Only Penny can look at it, so pass it on.

@@ -15,7 +15,8 @@
 import type { Env } from '../types';
 import { pennyDeps } from './deps';
 import type { InboundMessage } from './inbound';
-import type { Verdict } from './filter';
+import { isNarraAgent, type Verdict } from './filter';
+import { detectLang } from './lang';
 import { remember } from './poller';
 import { addSample, summarizeAll, type Samples } from './metrics';
 
@@ -115,9 +116,10 @@ export function stripLeakedNotes(answer: string): { text: string; cut: string } 
 type Script = 'en' | 'hans' | 'hant';
 type Intent = 'confirm' | 'record' | 'lookup' | 'photo' | 'other';
 
-function scriptOf(text: string): Script {
-  if (/[a-z]{3}/i.test(text) && !/[\u3400-\u9fff]/.test(text)) return 'en';
-  return /[这们说帐账还么为钱谁吗过]/.test(text) ? 'hans' : 'hant';
+function scriptOf(message: Pick<InboundMessage, 'text' | 'detectedLang'>): Script {
+  const lang = message.detectedLang ?? detectLang(message.text);
+  if (lang === 'en') return 'en';
+  return lang === 'zh-Hans' ? 'hans' : 'hant';
 }
 
 /** Penny's "one moment" notes, by what the message asks of her. A person does not answer every
@@ -229,7 +231,7 @@ function pick<T>(list: T[], seed: string): T {
 export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working'): string | null;
 export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'failed' | 'down'): string;
 export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' | 'failed' | 'down'): string | null {
-  const script = scriptOf(item.message.text);
+  const script = scriptOf(item.message);
   if (kind === 'failed') return FAILED[script];
   if (kind === 'down') return DOWN[script];
   const intent = intentOf(item);
@@ -237,15 +239,57 @@ export function noteText(item: Pick<QueuedMessage, 'message'>, kind: 'working' |
   return pick(NOTES[intent][script], item.message.eventId);
 }
 
-/** Add a message unless this event was seen already (Narra may deliver twice). */
-export async function enqueue(store: Store, item: Omit<QueuedMessage, 'attempts'>): Promise<'queued' | 'duplicate' | 'full'> {
+const REDACTED_KEY = 'redacted';
+const MAX_REDACTED = 200;
+
+/** Record an event id that was redacted in the room so unposted queued copies are dropped cleanly. */
+export async function redactEvent(store: Store, eventId: string): Promise<void> {
+  if (!eventId) return;
+  const list = (await store.get<string[]>(REDACTED_KEY)) ?? [];
+  if (!list.includes(eventId)) {
+    await store.put(REDACTED_KEY, [...list, eventId].slice(-MAX_REDACTED));
+  }
+}
+
+export async function isRedacted(store: Store, eventId: string): Promise<boolean> {
+  if (!eventId) return false;
+  const list = (await store.get<string[]>(REDACTED_KEY)) ?? [];
+  return list.includes(eventId);
+}
+
+/** When a newer non-agent human message arrives in the room, older queued group messages quote when answered. */
+export async function markOlderUnquoted(store: Store, latestHumanEventId: string): Promise<void> {
+  if (!latestHumanEventId) return;
+  const entries = await store.list<QueuedMessage>({ prefix: 'q:', limit: MAX_QUEUE });
+  for (const [key, item] of entries) {
+    const m = item.message;
+    if (
+      m.eventId !== latestHumanEventId &&
+      m.chatType === 'group' &&
+      item.verdict !== 'nudge' &&
+      m.kind !== 'reaction' &&
+      !isNarraAgent(m.senderId) &&
+      !m.shouldQuote
+    ) {
+      await store.put(key, { ...item, message: { ...m, shouldQuote: true } } satisfies QueuedMessage);
+    }
+  }
+}
+
+/** Add a message unless this event was seen already (Narra may deliver twice) or redacted. */
+export async function enqueue(store: Store, item: Omit<QueuedMessage, 'attempts'>): Promise<'queued' | 'duplicate' | 'full' | 'redacted'> {
+  if (await isRedacted(store, item.message.eventId)) return 'redacted';
   const seenKey = `seen:${item.message.eventId}`;
   const seen = await store.get<number>(seenKey);
   if (seen && Date.now() - seen < SEEN_TTL_MS) return 'duplicate';
   if ((await store.list({ prefix: 'q:', limit: MAX_QUEUE })).size >= MAX_QUEUE) return 'full';
   const next = ((await store.get<number>('next')) ?? 0) + 1;
   await store.put('next', next);
-  await store.put(`q:${pad(next)}`, { ...item, attempts: 0 } satisfies QueuedMessage);
+  const message =
+    isNarraAgent(item.message.senderId) && item.message.shouldQuote
+      ? { ...item.message, shouldQuote: false }
+      : item.message;
+  await store.put(`q:${pad(next)}`, { ...item, message, attempts: 0 } satisfies QueuedMessage);
   await store.put(seenKey, Date.now());
   return 'queued';
 }
@@ -265,6 +309,15 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
       if (item.ackId && deps.patch) await deps.patch(item, item.ackId, noteText(item, 'failed')).catch(() => undefined);
       await store.delete(key);
       continue;
+    }
+    if (await isRedacted(store, item.message.eventId)) {
+      deps.log(`dropped redacted message ${item.message.eventId}`);
+      if (item.ackId && deps.patch) await deps.patch(item, item.ackId, QUIET_NOTE).catch(() => undefined);
+      await store.delete(key);
+      continue;
+    }
+    if (isNarraAgent(item.message.senderId) && item.message.shouldQuote) {
+      item.message.shouldQuote = false;
     }
     const startedAt = Date.now();
     if (item.attempts === 0) {
@@ -289,8 +342,18 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         const { text, cut } = stripLeakedNotes(answer);
         if (cut) deps.log(`cut a leaked note from the answer to ${item.message.eventId} (${cut.length} chars)`);
         answer = text;
+        const fresh = await store.get<QueuedMessage>(key);
+        if (fresh?.message.shouldQuote && !isNarraAgent(item.message.senderId)) {
+          item.message.shouldQuote = true;
+        }
         item.answer = answer;
         await store.put(key, item);
+      }
+      if (await isRedacted(store, item.message.eventId)) {
+        deps.log(`dropped redacted message ${item.message.eventId} before posting`);
+        if (item.ackId && deps.patch) await deps.patch(item, item.ackId, QUIET_NOTE).catch(() => undefined);
+        await store.delete(key);
+        continue;
       }
       const posted = Boolean(answer) && !isSilence(answer);
       if (posted && item.ackId && deps.patch) {
@@ -394,6 +457,7 @@ export class RoomQueue {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const path = new URL(request.url).pathname;
     if (request.method === 'GET') {
       const queued = await this.state.storage.list({ prefix: 'q:', limit: 200 });
       return Response.json({
@@ -402,6 +466,20 @@ export class RoomQueue {
         log: (await this.state.storage.get<string[]>('log')) ?? [],
         metrics: summarizeAll(await this.state.storage.get<Samples>('metrics')),
       });
+    }
+    if (path.endsWith('/redact')) {
+      const body = (await request.json().catch(() => null)) as { eventId?: unknown } | null;
+      if (typeof body?.eventId === 'string' && body.eventId) {
+        await redactEvent(this.store(), body.eventId);
+      }
+      return Response.json({ ok: true });
+    }
+    if (path.endsWith('/human-event')) {
+      const body = (await request.json().catch(() => null)) as { eventId?: unknown } | null;
+      if (typeof body?.eventId === 'string' && body.eventId) {
+        await markOlderUnquoted(this.store(), body.eventId);
+      }
+      return Response.json({ ok: true });
     }
     const item = (await request.json()) as Omit<QueuedMessage, 'attempts'>;
     const result = await enqueue(this.store(), item);

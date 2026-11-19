@@ -31,6 +31,7 @@ export interface NarraEvent {
   sender: string;
   origin_server_ts?: number;
   type: string;
+  redacts?: string;
   content: Record<string, unknown>;
 }
 

@@ -11,6 +11,8 @@
  * answers (`replyTo`), and its quoted fallback ("> ...") is dropped from the text.
  */
 
+import type { DetectedLang } from './lang';
+
 export interface InboundMessage {
   roomId: string;
   roomName: string;
@@ -31,10 +33,23 @@ export interface InboundMessage {
   replyTo?: string;
   /** Penny's own message that replyTo points at, filled in by the poller when it is hers. */
   replyToPenny?: string;
+  /** Another person's message that replyTo points at ("<sender>: <snippet>"), filled in by the poller. */
+  replyToOther?: string;
   /** Set only on a nudge the gateway made up (verdict 'nudge'): why Penny should speak. */
   nudge?: 'pending' | 'welcome' | 'daily';
   /** Set by the poller when other Narra agents are in the group. */
   crowded?: boolean;
+  /** Set by the poller when Penny's reply in a group should quote this message. */
+  shouldQuote?: boolean;
+  /** Per-speaker language detected by the gateway ('zh-Hant' | 'zh-Hans' | 'en'). */
+  detectedLang?: DetectedLang;
+}
+
+export interface RedactionEvent {
+  roomId: string;
+  eventId: string;
+  senderId: string;
+  redacts: string;
 }
 
 const str = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -130,4 +145,19 @@ function parseReaction(outer: Record<string, unknown>, event: Record<string, unk
     kind: 'reaction',
     replyTo,
   };
+}
+
+/** Parse a Matrix m.room.redaction event, returning the redacted event id if valid. */
+export function parseRedaction(raw: unknown): RedactionEvent | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const outer = raw as Record<string, unknown>;
+  const event = (outer.event && typeof outer.event === 'object' ? outer.event : outer) as Record<string, unknown>;
+  if (str(event.type) !== 'm.room.redaction') return null;
+  const content = (event.content && typeof event.content === 'object' ? event.content : {}) as Record<string, unknown>;
+  const redacts = str(pick(event, 'redacts') ?? pick(content, 'redacts'));
+  const roomId = str(pick(event, 'room_id', 'roomId') ?? pick(outer, 'room_id', 'roomId'));
+  const eventId = str(pick(event, 'event_id', 'eventId', 'message_id', 'messageId'));
+  const senderId = str(pick(event, 'sender', 'sender_id', 'senderId'));
+  if (!roomId.startsWith('!') || !eventId || !senderId.startsWith('@') || !redacts) return null;
+  return { roomId, eventId, senderId, redacts };
 }
