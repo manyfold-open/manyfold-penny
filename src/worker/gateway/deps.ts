@@ -2,6 +2,7 @@ import { A2AError } from '../a2a';
 import { actorToken } from '../ledger/actor';
 import type { Env } from '../types';
 import { envelope } from './envelope';
+import { isNarraAgent } from './filter';
 import { editContent, messageContent, plainMentions } from './mentions';
 import type { Deps, QueuedMessage } from './queue';
 import { MEMBERSHIP_UNVERIFIED, NarraError, patchInRoom, postToRoom, runPennyTurn, txnId } from './reply';
@@ -37,10 +38,19 @@ function refusal(result: Extract<MatrixOpResult, { ok: false }>): NarraError {
   return new NarraError(`Matrix send failed: HTTP ${result.status}${code ? ` · ${code}` : ''}`, retryable, code);
 }
 
-/** In a group, Penny's message quotes the one she answers, so a busy room can tell. */
+/** In a group, Penny's message quotes the one she answers only when smart-quoting says it helps disambiguate. */
 function replyTarget(item: QueuedMessage): string | undefined {
   const m = item.message;
-  if (m.chatType !== 'group' || item.verdict === 'nudge' || m.kind === 'reaction' || !m.eventId.startsWith('$')) return undefined;
+  if (
+    m.chatType !== 'group' ||
+    item.verdict === 'nudge' ||
+    m.kind === 'reaction' ||
+    !m.eventId.startsWith('$') ||
+    isNarraAgent(m.senderId) ||
+    m.shouldQuote !== true
+  ) {
+    return undefined;
+  }
   return m.eventId;
 }
 

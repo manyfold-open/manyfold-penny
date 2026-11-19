@@ -15,8 +15,10 @@
  */
 
 import type { Env } from '../types';
+import { defuse } from './envelope';
 import { classify, isNarraAgent, type Verdict } from './filter';
-import { parseInbound, type InboundMessage } from './inbound';
+import { parseInbound, parseRedaction, type InboundMessage } from './inbound';
+import { detectExplicitLang, detectLang, dominantLang, type DetectedLang } from './lang';
 import { narraApi, type NarraApi, type NarraEvent, type NarraRoom } from './narra-api';
 import { NarraError } from './reply';
 import type { Store } from './queue';
@@ -65,6 +67,10 @@ export interface Sink {
   /** Whether the ledger already has this group. Without it, Penny sends no welcome. */
   knownGroup?(roomId: string): Promise<boolean>;
   deliver(message: InboundMessage, verdict: Verdict): Promise<void>;
+  /** Notify the room's queue that an event was redacted so unposted copies can be dropped. */
+  redact?(roomId: string, eventId: string): Promise<void>;
+  /** Notify the room's queue that a newer non-agent human message arrived in the room. */
+  humanActivity?(roomId: string, eventId: string): Promise<void>;
   log(line: string): void;
   /** Seconds from a message being sent to the gateway reading it. */
   readLag?(seconds: number): void;
@@ -84,7 +90,13 @@ interface Nudged {
 }
 
 /** A message nobody wrote: the gateway asking Penny to speak up in a group on her own. */
-function nudgeMessage(room: NarraRoom, kind: 'pending' | 'welcome' | 'daily', now: number, about: (number | string)[] = []): InboundMessage {
+function nudgeMessage(
+  room: NarraRoom,
+  kind: 'pending' | 'welcome' | 'daily',
+  now: number,
+  about: (number | string)[] = [],
+  detectedLang?: DetectedLang,
+): InboundMessage {
   return {
     roomId: room.roomId,
     roomName: room.title,
@@ -97,6 +109,7 @@ function nudgeMessage(room: NarraRoom, kind: 'pending' | 'welcome' | 'daily', no
     time: new Date(now).toISOString(),
     mentions: [],
     nudge: kind,
+    ...(detectedLang ? { detectedLang } : {}),
   };
 }
 
@@ -113,17 +126,61 @@ async function remindPending(store: Store, sink: Sink, room: NarraRoom, now: num
     (n) => !nudged.seqs.includes(n),
   );
   if (seqs.length === 0) return;
-  await sink.deliver(nudgeMessage(room, 'pending', now, seqs), 'nudge');
+  const roomLang = (await store.get<RoomLangState>(roomLangKey(room.roomId)))?.dominant;
+  await sink.deliver(nudgeMessage(room, 'pending', now, seqs, roomLang), 'nudge');
   await store.put(nudgedKey(room.roomId), { at: now, seqs: [...nudged.seqs, ...seqs].slice(-200) } satisfies Nudged);
   sink.log(`reminding ${room.roomId} of pending ${seqs.map((n) => `#${n}`).join(' ')}`);
 }
 const pennyKey = (id: string) => `penny:${id}`;
+const recentKey = (id: string) => `recent:${id}`;
+const redactedKey = (id: string) => `redacted:${id}`;
+const latestKey = (id: string) => `latest:${id}`;
+const userLangKey = (roomId: string, senderId: string) => `userLang:${roomId}:${senderId}`;
+const roomLangKey = (id: string) => `roomLang:${id}`;
 /** How many of Penny's own messages per room the poller keeps, to match replies and reactions. */
 export const PENNY_REMEMBERS = 30;
+/** How many recent human/non-Penny messages per room the poller keeps for reply context. */
+export const RECENT_REMEMBERS = 30;
+const REDACTED_REMEMBERS = 200;
+const ROOM_LANG_REMEMBERS = 30;
 
 interface PennyMessage {
   eventId: string;
   text: string;
+}
+
+interface RecentMessage {
+  eventId: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+}
+
+interface RoomLangState {
+  recent: DetectedLang[];
+  dominant: DetectedLang;
+}
+
+const cleanLine = (s: string) => s.replace(/[\r\n]+/g, ' ').trim();
+
+function isReplaceEdit(event: NarraEvent): boolean {
+  const relates = (event.content?.['m.relates_to'] ?? {}) as Record<string, unknown>;
+  return relates.rel_type === 'm.replace';
+}
+
+function isHumanMessageEvent(event: NarraEvent, agentId: string, redactedSet: Set<string>): boolean {
+  if (redactedSet.has(event.event_id)) return false;
+  if (event.sender === agentId || isNarraAgent(event.sender) || !event.sender.startsWith('@')) return false;
+  if (event.type && event.type !== 'm.room.message') return false;
+  if (isReplaceEdit(event)) return false;
+  const msgtype = typeof event.content?.msgtype === 'string' ? event.content.msgtype : '';
+  if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice' && msgtype !== 'm.image' && msgtype !== 'm.file' && msgtype !== 'm.video' && msgtype !== 'm.audio') {
+    return false;
+  }
+  if ((!msgtype || msgtype === 'm.text' || msgtype === 'm.notice') && typeof event.content?.body === 'string' && !event.content.body.trim()) {
+    return false;
+  }
+  return true;
 }
 
 const handledKey = (id: string) => `handled:${id}`;
@@ -151,6 +208,36 @@ export async function handleEvents(
 
   const names = await sink.botNames(room.roomId);
   const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
+  const recent = (await store.get<RecentMessage[]>(recentKey(room.roomId))) ?? [];
+  const redacted = (await store.get<string[]>(redactedKey(room.roomId))) ?? [];
+  let latestEventId = await store.get<string>(latestKey(room.roomId));
+  let roomLangState = await store.get<RoomLangState>(roomLangKey(room.roomId));
+  let roomLangDirty = false;
+  const userLangCache = new Map<string, DetectedLang | undefined>();
+
+  // Record redactions first so any same-batch or queued message matching them is dropped cleanly.
+  let redactedDirty = false;
+  let activity = false;
+  for (const event of fresh) {
+    const r = parseRedaction({ event: { ...event, room_id: room.roomId } });
+    if (!r) continue;
+    if (r.senderId !== agentId && !isNarraAgent(r.senderId)) activity = true;
+    if (!redacted.includes(r.redacts)) {
+      redacted.push(r.redacts);
+      redactedDirty = true;
+    }
+    const recentIdx = recent.findIndex((m) => m.eventId === r.redacts);
+    if (recentIdx !== -1) recent.splice(recentIdx, 1);
+    const mineIdx = mine.findIndex((m) => m.eventId === r.redacts);
+    if (mineIdx !== -1) mine.splice(mineIdx, 1);
+    if (latestEventId === r.redacts) latestEventId = recent.at(-1)?.eventId;
+    await sink.redact?.(room.roomId, r.redacts);
+  }
+  if (redactedDirty) {
+    await store.put(redactedKey(room.roomId), redacted.slice(-REDACTED_REMEMBERS));
+  }
+  const redactedSet = new Set(redacted);
+
   // Other Narra agents in the room. With them around, Narra refuses a 7th agent message in a row
   // (see queue.ts), so Penny posts her note at once to hold her place.
   const crowded = room.type === 'group' && Object.keys(room.names).some((id) => id !== agentId && isNarraAgent(id));
@@ -158,8 +245,10 @@ export async function handleEvents(
   // something to answer here: a reminder is only for the first case without the second.
   let personSpoke = false;
   let answering = false;
-  let activity = false;
-  for (const event of fresh) {
+  let latestHumanInBatch: string | undefined;
+
+  for (let i = 0; i < fresh.length; i++) {
+    const event = fresh[i];
     if (event.sender === agentId) {
       // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
       // (her "one moment" note turned into the answer) updates the message it replaces.
@@ -171,8 +260,11 @@ export async function handleEvents(
       if (earlier) earlier.text = body.slice(0, 1000);
       else mine.push({ eventId: replaced ?? event.event_id, text: body.slice(0, 1000) });
       if (mine.length > PENNY_REMEMBERS) mine.splice(0, mine.length - PENNY_REMEMBERS);
+      if (!replaced && !redactedSet.has(event.event_id)) latestEventId = event.event_id;
       continue;
     }
+    if (event.type === 'm.room.redaction' || redactedSet.has(event.event_id)) continue;
+
     let message: InboundMessage | null = null;
     try {
       message = parseInbound({
@@ -187,11 +279,68 @@ export async function handleEvents(
     }
     if (!message) continue;
     activity = true;
+    // Never quote, record, or pass on other @agent-* messages.
+    if (isNarraAgent(message.senderId)) continue;
+
     if (crowded) message.crowded = true;
     if (message.replyTo) {
       const hers = mine.find((m) => m.eventId === message.replyTo);
-      if (hers) message.replyToPenny = hers.text;
+      if (hers) {
+        message.replyToPenny = hers.text;
+      } else if (message.kind !== 'reaction') {
+        const other = recent.find((r) => r.eventId === message.replyTo);
+        if (other) {
+          const sender = cleanLine(other.senderName || other.senderId).slice(0, 80);
+          const snippet = cleanLine(defuse(other.text)).slice(0, 300);
+          message.replyToOther = `${sender}: ${snippet}`;
+        }
+      }
     }
+
+    if (!userLangCache.has(message.senderId)) {
+      userLangCache.set(message.senderId, await store.get<DetectedLang>(userLangKey(room.roomId, message.senderId)));
+    }
+    const userHistoryLang = userLangCache.get(message.senderId);
+    const roomHistoryLang = roomLangState?.dominant;
+    if (message.kind === 'reaction') {
+      message.detectedLang = userHistoryLang ?? roomHistoryLang ?? 'zh-Hant';
+    } else {
+      const detected = detectLang(message.text, userHistoryLang, roomHistoryLang);
+      message.detectedLang = detected;
+      if (detectExplicitLang(message.text) !== null) {
+        userLangCache.set(message.senderId, detected);
+        await store.put(userLangKey(room.roomId, message.senderId), detected);
+        const nextRecent = [...(roomLangState?.recent ?? []), detected].slice(-ROOM_LANG_REMEMBERS);
+        roomLangState = { recent: nextRecent, dominant: dominantLang(nextRecent, roomLangState?.dominant) };
+        roomLangDirty = true;
+      }
+    }
+
+    if (message.chatType === 'group' && message.kind !== 'reaction') {
+      const hasNewerHumanInBatch = fresh.slice(i + 1).some((later) => isHumanMessageEvent(later, agentId, redactedSet));
+      const repliesToOlder = Boolean(message.replyTo && latestEventId && message.replyTo !== latestEventId);
+      message.shouldQuote = hasNewerHumanInBatch || repliesToOlder;
+    }
+
+    if (message.kind !== 'reaction') {
+      if (isReplaceEdit(event)) {
+        const relates = (event.content?.['m.relates_to'] ?? {}) as Record<string, unknown>;
+        const target = typeof relates.event_id === 'string' ? relates.event_id : '';
+        const earlier = recent.find((r) => r.eventId === target);
+        if (earlier) earlier.text = message.text.slice(0, 1000);
+      } else {
+        recent.push({
+          eventId: message.eventId,
+          senderId: message.senderId,
+          senderName: message.senderName,
+          text: message.text.slice(0, 1000),
+        });
+        if (recent.length > RECENT_REMEMBERS) recent.splice(0, recent.length - RECENT_REMEMBERS);
+        latestEventId = message.eventId;
+        latestHumanInBatch = message.eventId;
+      }
+    }
+
     const classified = classify(message, { matrixId: agentId, names: ['Penny', ...names] });
     // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
     const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
@@ -206,6 +355,10 @@ export async function handleEvents(
     }
   }
   await store.put(pennyKey(room.roomId), mine);
+  await store.put(recentKey(room.roomId), recent);
+  if (latestEventId) await store.put(latestKey(room.roomId), latestEventId);
+  if (roomLangDirty && roomLangState) await store.put(roomLangKey(room.roomId), roomLangState);
+  if (latestHumanInBatch) await sink.humanActivity?.(room.roomId, latestHumanInBatch);
   if (personSpoke && !answering && room.type === 'group') await remindPending(store, sink, room, now);
   return activity;
 }
@@ -256,7 +409,8 @@ async function sendDaily(store: Store, sink: Sink, rooms: NarraRoom[], now: numb
   for (const { roomId, date } of due) {
     const room = rooms.find((r) => r.roomId === roomId && r.type === 'group');
     if (!room || (await store.get<string>(dailyKey(roomId))) === date) continue;
-    await sink.deliver(nudgeMessage(room, 'daily', now, [date]), 'nudge');
+    const roomLang = (await store.get<RoomLangState>(roomLangKey(roomId)))?.dominant;
+    await sink.deliver(nudgeMessage(room, 'daily', now, [date], roomLang), 'nudge');
     await store.put(dailyKey(roomId), date);
     sink.log(`daily recap for ${roomId} (${date})`);
   }
@@ -447,6 +601,20 @@ export class NarraPoller {
         await queue.fetch('https://room-queue/enqueue', {
           method: 'POST',
           body: JSON.stringify({ message, verdict, enqueuedAt: Date.now() }),
+        });
+      },
+      async redact(roomId, eventId) {
+        const queue = env.ROOM_QUEUE!.get(env.ROOM_QUEUE!.idFromName(roomId));
+        await queue.fetch('https://room-queue/redact', {
+          method: 'POST',
+          body: JSON.stringify({ eventId }),
+        });
+      },
+      async humanActivity(roomId, eventId) {
+        const queue = env.ROOM_QUEUE!.get(env.ROOM_QUEUE!.idFromName(roomId));
+        await queue.fetch('https://room-queue/human-event', {
+          method: 'POST',
+          body: JSON.stringify({ eventId }),
         });
       },
       log: (line) => {

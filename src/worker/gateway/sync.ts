@@ -61,12 +61,12 @@ export interface SyncDeps {
   log(line: string): void;
 }
 
-// Only what the gateway reads: messages (which include edits) and reactions, in joined rooms.
+// Only what the gateway reads: messages (which include edits), reactions, and redactions, in joined rooms.
 export const SYNC_FILTER = JSON.stringify({
   presence: { types: [] },
   account_data: { types: [] },
   room: {
-    timeline: { limit: 50, types: ['m.room.message', 'm.reaction'] },
+    timeline: { limit: 50, types: ['m.room.message', 'm.reaction', 'm.room.redaction'] },
     state: { types: [] },
     ephemeral: { types: [] },
     account_data: { types: [] },
