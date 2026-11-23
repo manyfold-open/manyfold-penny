@@ -74,6 +74,21 @@ describe('parsing', () => {
     expect(parseInbound({ room_id: '!a:x', event_id: '$e', sender: '@a:x', content: { msgtype: 'm.text', body: 'hi' } })).not.toHaveProperty('kind');
   });
 
+  it('treats a Narra captioned image as one photo with the original event id and caption', () => {
+    const compound = { mime_type: 'image/png', media_url: 'mxc://example.org/receipt',
+      text: 'Penny，這張是假收據測試。請只讀總金額和幣別，不用記帳。' };
+    const event = {
+      room_id: '!a:x', event_id: '$photo', sender: '@a:x',
+      content: { msgtype: 'ai.netmind.compound', body: '[ai.netmind.compound] receipt.png', 'ai.netmind.compound': compound },
+    };
+    const message = parseInbound(event);
+    expect(message).toMatchObject({ kind: 'image', eventId: '$photo', text: compound.text });
+    expect(classify(message!, BOT)).toBe('called');
+    expect(parseInbound({ ...event, content: {
+      ...event.content, 'ai.netmind.compound': { ...compound, mime_type: 'video/mp4' },
+    } })).toBeNull();
+  });
+
   it('reads a reply, without the quoted message', () => {
     const m = parseInbound({
       room_id: '!a:x',
