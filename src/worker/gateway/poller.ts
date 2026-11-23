@@ -284,6 +284,9 @@ export async function handleEvents(
       continue;
     }
     if (!message) continue;
+    // Narra sends a separate hidden hint for native mentions on captioned photos.
+    // Keep that path for addressed compounds so the same photo is processed once.
+    if (event.content?.msgtype === 'ai.netmind.compound' && message.mentions.length > 0) continue;
     const compoundHint = isHiddenCompoundHint(event);
     if (compoundHint && !message.mentions.includes(agentId)) continue;
     activity = true;
