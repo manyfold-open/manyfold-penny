@@ -1,5 +1,5 @@
 import { allocate, MAX_AMOUNT } from '../ledger/money';
-import { detectLang } from './lang';
+import { detectLang, type DetectedLang } from './lang';
 import type { InboundMessage } from './inbound';
 
 const CALCULATE_ONLY = /(?:只|就)算(?:一下)?(?:就好|就行)?|算一下就好|(?:先)?(?:不用|不要|別|别|不必)(?:入|記|记)[帳账]|\b(?:just calculate|(?:do not|don't) (?:record|log|save))\b/i;
@@ -10,6 +10,22 @@ const ENGLISH_COUNTS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', '
 
 export function isReadOnlySplit(message: InboundMessage): boolean {
   return message.kind === undefined && CALCULATE_ONLY.test(message.text) && EQUAL_SPLIT.test(message.text);
+}
+
+function equalSplitReply(amount: string, count: string, lang: DetectedLang): string {
+  if (lang === 'en') return `${amount} each for ${count} people. Nothing was recorded.`;
+  return lang === 'zh-Hans' ? `${count} 人均分，每人 ${amount}。这笔没记账。`
+    : `${count} 人均分，每人 ${amount}。這筆沒記帳。`;
+}
+
+export function restateSplitPreview(message: InboundMessage): string | null {
+  const prior = message.restatePenny;
+  if (!prior) return null;
+  const lang = message.detectedLang ?? detectLang(message.text);
+  const en = /^([£€$]\d+(?:\.\d{2})?) each for (\d+) people\. Nothing was recorded\.$/.exec(prior);
+  if (en) return equalSplitReply(en[1]!, en[2]!, lang);
+  const zh = /^(\d+) 人均分，每人 ([£€$]\d+(?:\.\d{2})?)。[這这][筆笔][沒没][記记][帳账]。$/.exec(prior);
+  return zh ? equalSplitReply(zh[2]!, zh[1]!, lang) : null;
 }
 
 export function splitPreview(message: InboundMessage): string | null {
@@ -39,11 +55,7 @@ export function splitPreview(message: InboundMessage): string | null {
   const high = shares[0]!;
   const low = shares[count - 1]!;
   const money = (minor: number) => `${symbol}${(minor / 100).toFixed(2).replace(/\.00$/, '')}`;
-  if (high === low) {
-    if (lang === 'en') return `${money(high)} each for ${count} people. Nothing was recorded.`;
-    return lang === 'zh-Hans' ? `${count} 人均分，每人 ${money(high)}。这笔没记账。`
-      : `${count} 人均分，每人 ${money(high)}。這筆沒記帳。`;
-  }
+  if (high === low) return equalSplitReply(money(high), String(count), lang);
 
   const highCount = shares.filter((share) => share === high).length;
   const lowCount = count - highCount;

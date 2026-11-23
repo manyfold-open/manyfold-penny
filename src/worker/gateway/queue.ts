@@ -17,7 +17,7 @@ import { pennyDeps } from './deps';
 import type { InboundMessage } from './inbound';
 import { isNarraAgent, type Verdict } from './filter';
 import { detectLang } from './lang';
-import { splitPreview } from './split-preview';
+import { restateSplitPreview, splitPreview } from './split-preview';
 import { remember } from './poller';
 import { addSample, summarizeAll, type Samples } from './metrics';
 
@@ -222,7 +222,7 @@ export function intentOf(item: Pick<QueuedMessage, 'message'>): Intent | 'chat' 
  */
 export function wantsNote(item: Pick<QueuedMessage, 'message' | 'verdict'>): boolean {
   if (item.message.kind === 'reaction') return false;
-  return item.verdict === 'called';
+  return item.verdict === 'called' && !item.message.restatePenny;
 }
 
 /** Same message, same pick: a retried note never changes its words. */
@@ -340,7 +340,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         phase = 'turn';
         const turnStarted = Date.now();
         try {
-          answer = (!item.message.restatePenny && (item.verdict === 'question' || item.verdict === 'called') ? splitPreview(item.message) : null)
+          answer = restateSplitPreview(item.message)
+            ?? (!item.message.restatePenny && (item.verdict === 'question' || item.verdict === 'called') ? splitPreview(item.message) : null)
             ?? await deps.turn(item);
         } finally {
           await stop();

@@ -74,6 +74,12 @@ const bareEmoji = (s: string) => s.replace(/[\uFE0F\u{1F3FB}-\u{1F3FF}]/gu, '');
 /** Narra gives every agent a Matrix id of the form @agent-<hex>:<server>. People get @sp-…. */
 export const isNarraAgent = (matrixId: string) => /^@agent-[0-9a-f]+:/i.test(matrixId);
 
+const RESTATE_RE = /看不懂英文|[給给]我看中文|翻[譯译]成\s*(?:中文|英文|繁[體体]|简体|簡體)|\b(?:translate|restate)\b.{0,40}\b(?:in|into)\s+(?:chinese|english|mandarin)\b/i;
+
+export function isRestatementRequest(text: string): boolean {
+  return RESTATE_RE.test(text);
+}
+
 export function classify(message: InboundMessage, bot: BotIdentity): Classified {
   if (message.senderId === bot.matrixId) return 'skip';
   // Another Narra agent. Groups hold several, and they answer each other's messages ("好的。"
@@ -82,6 +88,9 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   if (isNarraAgent(message.senderId)) return 'skip';
   // A reaction counts only as an OK to one of Penny's own messages.
   if (message.kind === 'reaction') return message.replyToPenny !== undefined && APPROVE.has(bareEmoji(message.text).trim()) ? 'called' : 'skip';
+  if (message.restatePenny !== undefined) return 'called';
+  // A currency amount inside a translation request cannot be a proposed spend.
+  if (message.chatType === 'group' && isRestatementRequest(message.text)) return 'skip';
   if (message.chatType === 'dm') return 'called';
   // Replying to Penny is talking to her, as Narra counts it for a mention.
   if (message.replyToPenny !== undefined) return 'called';
