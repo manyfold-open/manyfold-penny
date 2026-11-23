@@ -108,7 +108,9 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   const bare = bareEmoji(text);
   if (ANSWER.test(bare) || CHANGE.test(bare) || (ENTRY_REF.test(text) && text.length <= 20)) return 'answer';
 
-  if (QUESTION.some((q) => q.test(text))) return 'question';
+  if (QUESTION.some((q) => q.test(text))) {
+    return aimedElsewhere || message.replyTo !== undefined ? 'skip' : 'question';
+  }
 
   const digits = (/\d/.test(text) && AMOUNT.test(text)) || CN_AMOUNT.test(text);
   if (digits) {

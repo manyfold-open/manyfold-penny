@@ -1135,3 +1135,31 @@ describe('trilingual language detection (detectLang)', () => {
     expect(detectLang('晚餐 120 我付', 'en', 'en')).toBe('zh-Hant');
   });
 });
+
+it('speaks only on its own topic in mixed group chatter', async () => {
+  const cases = [
+    '晚上能吃啥',
+    '我先去開個會',
+    '今晚倫敦有什麼市集',
+    '今天 AI 圈有啥新消息',
+    '能抽張塔羅看看工作嗎',
+    '幫我求一支籤',
+    '有英國簽證資料可以查嗎',
+    '晚餐 £80 我付的，四個人怎麼分',
+    'Boots 有折扣碼嗎',
+    '昨天吃火鍋超爽',
+  ];
+  const replies: string[] = [];
+  for (const text of cases) {
+    if (classify(msg(text), BOT) !== 'skip') replies.push(text);
+  }
+  expect(replies).toEqual(["晚餐 £80 我付的，四個人怎麼分"]);
+});
+
+
+it('leaves split questions addressed to another person to that person', () => {
+  const question = '請問誰欠誰？';
+  expect(classify(msg(question), BOT)).toBe('question');
+  expect(classify(msg('@Ken ' + question, { mentions: ['@ken:x'] }), BOT)).toBe('skip');
+  expect(classify(msg(question, { replyTo: '$ken' }), BOT)).toBe('skip');
+});
