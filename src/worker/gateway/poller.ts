@@ -168,11 +168,17 @@ function isReplaceEdit(event: NarraEvent): boolean {
   return relates.rel_type === 'm.replace';
 }
 
+function isHiddenCompoundHint(event: NarraEvent): boolean {
+  const hint = event.content?.['ai.netmind.hint'] as { kind?: string } | undefined;
+  const visibility = event.content?.['ai.netmind.visibility'] as { status?: string } | undefined;
+  return hint?.kind === 'compound_trigger' && visibility?.status === 'hidden';
+}
+
 function isHumanMessageEvent(event: NarraEvent, agentId: string, redactedSet: Set<string>): boolean {
   if (redactedSet.has(event.event_id)) return false;
   if (event.sender === agentId || isNarraAgent(event.sender) || !event.sender.startsWith('@')) return false;
   if (event.type && event.type !== 'm.room.message') return false;
-  if (isReplaceEdit(event)) return false;
+  if (isReplaceEdit(event) || isHiddenCompoundHint(event)) return false;
   const msgtype = typeof event.content?.msgtype === 'string' ? event.content.msgtype : '';
   if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice' && msgtype !== 'm.image' && msgtype !== 'm.file' && msgtype !== 'm.video' && msgtype !== 'm.audio') {
     return false;
@@ -278,6 +284,8 @@ export async function handleEvents(
       continue;
     }
     if (!message) continue;
+    const compoundHint = isHiddenCompoundHint(event);
+    if (compoundHint && !message.mentions.includes(agentId)) continue;
     activity = true;
     // Never quote, record, or pass on other @agent-* messages.
     if (isNarraAgent(message.senderId)) continue;
@@ -322,7 +330,7 @@ export async function handleEvents(
       message.shouldQuote = hasNewerHumanInBatch || repliesToOlder;
     }
 
-    if (message.kind !== 'reaction') {
+    if (message.kind !== 'reaction' && !compoundHint) {
       if (isReplaceEdit(event)) {
         const relates = (event.content?.['m.relates_to'] ?? {}) as Record<string, unknown>;
         const target = typeof relates.event_id === 'string' ? relates.event_id : '';

@@ -822,6 +822,43 @@ describe('the poller', () => {
     expect(delivered.map((m) => [m.eventId, m.shouldQuote])).toEqual([['$r2', true]]);
   });
 
+  it('delivers only Penny’s compound hint and keeps hidden hints out of human quoting context', async () => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api } = fakeApi(pages);
+    const delivered: InboundMessage[] = [];
+    const sink: Sink = {
+      botNames: async () => [],
+      hasPending: async () => false,
+      deliver: async (message) => { delivered.push(message); },
+      log: () => undefined,
+    };
+    const hint = (eventId: string, agentId: string): NarraEvent => {
+      const body = '[internal hint] process compound $receipt';
+      return {
+        ...text(eventId, body),
+        content: {
+          msgtype: 'm.text',
+          body,
+          'm.mentions': { user_ids: [agentId] },
+          'ai.netmind.hint': { kind: 'compound_trigger', target_event_id: '$receipt' },
+          'ai.netmind.visibility': { status: 'hidden' },
+        },
+      };
+    };
+    await tick(store, api, sink, 1_000_000);
+    pages['!a:x'].push(
+      text('$question', '@Penny 誰欠誰'),
+      hint('$other-hint', '@agent-other:matrix.netmind.chat'),
+      hint('$penny-hint', PENNY),
+    );
+    await tick(store, api, sink, 1_000_000 + ACTIVE_EVERY_MS);
+    expect(delivered.map(({ eventId, shouldQuote }) => [eventId, shouldQuote])).toEqual([
+      ['$question', false],
+      ['$penny-hint', false],
+    ]);
+  });
+
   it('tracks per-person trilingual language and attaches replyToOther parent context', async () => {
     const store = new MemoryStore();
     const pages = { '!a:x': [] as NarraEvent[] };
