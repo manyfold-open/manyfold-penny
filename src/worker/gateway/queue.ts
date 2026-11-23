@@ -17,6 +17,7 @@ import { pennyDeps } from './deps';
 import type { InboundMessage } from './inbound';
 import { isNarraAgent, type Verdict } from './filter';
 import { detectLang } from './lang';
+import { splitPreview } from './split-preview';
 import { remember } from './poller';
 import { addSample, summarizeAll, type Samples } from './metrics';
 
@@ -339,7 +340,8 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         phase = 'turn';
         const turnStarted = Date.now();
         try {
-          answer = await deps.turn(item);
+          answer = (item.verdict === 'question' || item.verdict === 'called' ? splitPreview(item.message) : null)
+            ?? await deps.turn(item);
         } finally {
           await stop();
         }

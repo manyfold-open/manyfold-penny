@@ -242,6 +242,26 @@ const deps = (overrides: Partial<Deps> = {}): Deps & { posted: string[] } => {
 };
 
 describe('the room queue', () => {
+  it('answers read-only equal splits without invoking the ledger agent', async () => {
+    const store = new MemoryStore();
+    const turn = vi.fn(async () => '');
+    const d = deps({ turn });
+    const prompt = '展看完還要吃飯。假設晚餐一共 £78，三個人均分的話一人多少？幫我算一下就好，先不用記帳。';
+    const first = msg(prompt);
+    const remainder = msg('£10，三個人平分，只算就好。', { eventId: '$split-remainder' });
+    expect(classify(first, BOT)).toBe('question');
+    expect(classify(msg(prompt, { replyTo: '$ken' }), BOT)).toBe('skip');
+    for (const message of [first, remainder]) {
+      await enqueue(store, { message, verdict: 'question', enqueuedAt: Date.now() });
+    }
+    await drain(store, d);
+    expect(turn).not.toHaveBeenCalled();
+    expect(d.posted).toEqual([
+      '3 人均分，每人 £26。這筆沒記帳。',
+      '1 人各付 £3.34，2 人各付 £3.33。這筆沒記帳。',
+    ]);
+  });
+
   it('answers messages in the order they arrived', async () => {
     const store = new MemoryStore();
     for (const text of ['晚餐 80 我付', 'OK', '誰欠誰']) {
