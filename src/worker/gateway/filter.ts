@@ -7,7 +7,7 @@
  */
 
 import type { InboundMessage } from './inbound';
-import { splitPreview } from './split-preview';
+import { isReadOnlySplit } from './split-preview';
 
 /** 'question': a question to the group about money owed, without @Penny. 'nudge': no one wrote
  *  it; the gateway asks Penny to speak up on her own (see poller.ts). */
@@ -109,7 +109,7 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   const bare = bareEmoji(text);
   if (ANSWER.test(bare) || CHANGE.test(bare) || (ENTRY_REF.test(text) && text.length <= 20)) return 'answer';
 
-  if (splitPreview(message) !== null || QUESTION.some((q) => q.test(text))) {
+  if (isReadOnlySplit(message) || QUESTION.some((q) => q.test(text))) {
     return aimedElsewhere || message.replyTo !== undefined ? 'skip' : 'question';
   }
 

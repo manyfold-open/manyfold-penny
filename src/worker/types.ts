@@ -13,6 +13,8 @@ export interface Env {
   MANYFOLD_API_BASE_URL?: string;
   /** "production" enables https-only and private-IP checks on agent URLs. */
   ENVIRONMENT?: string;
+  /** Source commit attached by the production deployment workflow. */
+  RELEASE_SHA?: string;
   /** Optional: >=32 chars. Without it a key is generated and kept in D1. */
   CONFIG_ENCRYPTION_KEY?: string;
   /** Optional: when set, all routes except /api/health and /api/state require x-admin-password. */
