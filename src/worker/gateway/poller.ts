@@ -132,6 +132,8 @@ async function remindPending(store: Store, sink: Sink, room: NarraRoom, now: num
   sink.log(`reminding ${room.roomId} of pending ${seqs.map((n) => `#${n}`).join(' ')}`);
 }
 const pennyKey = (id: string) => `penny:${id}`;
+const lastAgentAnswerKey = (id: string) => `last-agent-answer:${id}`;
+const RESTATE_RE = /看不懂英文|[給给]我看中文|翻[譯译]成\s*(?:中文|英文|繁[體体]|简体|簡體)|\b(?:translate|restate)\b.{0,40}\b(?:in|into)\s+(?:chinese|english|mandarin)\b/i;
 const recentKey = (id: string) => `recent:${id}`;
 const redactedKey = (id: string) => `redacted:${id}`;
 const latestKey = (id: string) => `latest:${id}`;
@@ -216,6 +218,7 @@ export async function handleEvents(
   const mine = (await store.get<PennyMessage[]>(pennyKey(room.roomId))) ?? [];
   const recent = (await store.get<RecentMessage[]>(recentKey(room.roomId))) ?? [];
   const redacted = (await store.get<string[]>(redactedKey(room.roomId))) ?? [];
+  let lastAgentAnswer = await store.get<{ eventId: string; timestamp: number }>(lastAgentAnswerKey(room.roomId));
   let latestEventId = await store.get<string>(latestKey(room.roomId));
   let roomLangState = await store.get<RoomLangState>(roomLangKey(room.roomId));
   let roomLangDirty = false;
@@ -236,6 +239,7 @@ export async function handleEvents(
     if (recentIdx !== -1) recent.splice(recentIdx, 1);
     const mineIdx = mine.findIndex((m) => m.eventId === r.redacts);
     if (mineIdx !== -1) mine.splice(mineIdx, 1);
+    if (lastAgentAnswer?.eventId === r.redacts) lastAgentAnswer = undefined;
     if (latestEventId === r.redacts) latestEventId = recent.at(-1)?.eventId;
     await sink.redact?.(room.roomId, r.redacts);
   }
@@ -255,6 +259,13 @@ export async function handleEvents(
 
   for (let i = 0; i < fresh.length; i++) {
     const event = fresh[i];
+    if (!redactedSet.has(event.event_id) && isNarraAgent(event.sender) && event.type === 'm.room.message' &&
+        event.content?.msgtype === 'm.text' && typeof event.origin_server_ts === 'number') {
+      const relation = (event.content['m.relates_to'] ?? {}) as Record<string, unknown>;
+      const eventId = relation.rel_type === 'm.replace' && typeof relation.event_id === 'string'
+        ? relation.event_id : event.event_id;
+      if (!redactedSet.has(eventId)) lastAgentAnswer = { eventId, timestamp: event.origin_server_ts };
+    }
     if (event.sender === agentId) {
       // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
       // (her "one moment" note turned into the answer) updates the message it replaces.
@@ -349,7 +360,16 @@ export async function handleEvents(
       }
     }
 
-    const classified = classify(message, { matrixId: agentId, names: ['Penny', ...names] });
+    if (message.kind === undefined && RESTATE_RE.test(message.text) &&
+        (message.replyToPenny !== undefined || (message.chatType === 'group' && !message.replyTo &&
+          message.mentions.every((id) => id === agentId) && lastAgentAnswer &&
+          typeof event.origin_server_ts === 'number' && event.origin_server_ts >= lastAgentAnswer.timestamp &&
+          event.origin_server_ts - lastAgentAnswer.timestamp <= 180_000))) {
+      const previous = message.replyToPenny ?? mine.find((m) => m.eventId === lastAgentAnswer?.eventId)?.text;
+      if (previous) message.restatePenny = previous;
+    }
+
+    const classified = message.restatePenny ? 'called' : classify(message, { matrixId: agentId, names: ['Penny', ...names] });
     // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
     const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
     if (verdict === 'skip' && message.chatType === 'group' && message.kind !== 'reaction' && !isNarraAgent(message.senderId)) {
@@ -362,6 +382,8 @@ export async function handleEvents(
       sink.log(`queued ${message.eventId} in ${room.roomId} (${verdict})`);
     }
   }
+  if (lastAgentAnswer) await store.put(lastAgentAnswerKey(room.roomId), lastAgentAnswer);
+  else await store.delete(lastAgentAnswerKey(room.roomId));
   await store.put(pennyKey(room.roomId), mine);
   await store.put(recentKey(room.roomId), recent);
   if (latestEventId) await store.put(latestKey(room.roomId), latestEventId);
