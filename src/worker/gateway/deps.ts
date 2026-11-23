@@ -72,7 +72,7 @@ export function pennyDeps(env: Env): Deps {
     turn: async (item) => {
       const m = item.message;
       // Only a person's own message carries their token; a nudge has no sender and gets none.
-      const token = m.senderId && item.verdict !== 'nudge' ? await actorToken(env, m.roomId, m.senderId) : undefined;
+      const token = m.senderId && item.verdict !== 'nudge' && !m.restatePenny ? await actorToken(env, m.roomId, m.senderId) : undefined;
       return runPennyTurn(env, envelope(m, item.verdict, token), m.eventId);
     },
     post: async (item, text) => {

@@ -33,6 +33,8 @@ export interface InboundMessage {
   replyTo?: string;
   /** Penny's own message that replyTo points at, filled in by the poller when it is hers. */
   replyToPenny?: string;
+  /** A gateway-verified request to restate a previous Penny answer without changing the ledger. */
+  restatePenny?: string;
   /** Another person's message that replyTo points at ("<sender>: <snippet>"), filled in by the poller. */
   replyToOther?: string;
   /** Set only on a nudge the gateway made up (verdict 'nudge'): why Penny should speak. */

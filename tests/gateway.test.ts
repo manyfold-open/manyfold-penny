@@ -696,6 +696,25 @@ describe('the poller', () => {
     ]);
   });
 
+  it('restates Penny’s latest answer without adopting another agent’s answer', async () => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api } = fakeApi(pages);
+    const seen: (string | undefined)[] = [];
+    const { s } = sink();
+    s.deliver = async (message) => { seen.push(message.restatePenny); };
+    const now = 1_000_000;
+    await tick(store, api, s, now);
+    pages['!a:x'].push(
+      text('$penny', 'Alice owes £12', PENNY),
+      text('$rewrite-penny', '看不懂英文 能不能给我看中文'),
+      text('$peer', 'Here are two venues', '@agent-f9388b28:matrix.netmind.chat'),
+      text('$rewrite-peer', '能不能给我看中文'),
+    );
+    await tick(store, api, s, now + ACTIVE_EVERY_MS);
+    expect(seen).toEqual(['Alice owes £12']);
+  });
+
   it('passes on a bare "好" or "OK" only while the group has something waiting for an OK', async () => {
     for (const pending of [false, true]) {
       const store = new MemoryStore();

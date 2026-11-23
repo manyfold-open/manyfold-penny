@@ -340,7 +340,7 @@ export async function drain(store: Store, deps: Deps, budgetMs = 10 * 60_000): P
         phase = 'turn';
         const turnStarted = Date.now();
         try {
-          answer = (item.verdict === 'question' || item.verdict === 'called' ? splitPreview(item.message) : null)
+          answer = (!item.message.restatePenny && (item.verdict === 'question' || item.verdict === 'called') ? splitPreview(item.message) : null)
             ?? await deps.turn(item);
         } finally {
           await stop();
