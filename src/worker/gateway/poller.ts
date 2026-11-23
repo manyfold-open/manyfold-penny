@@ -16,7 +16,7 @@
 
 import type { Env } from '../types';
 import { defuse } from './envelope';
-import { classify, isNarraAgent, type Verdict } from './filter';
+import { classify, isNarraAgent, isRestatementRequest, type Verdict } from './filter';
 import { parseInbound, parseRedaction, type InboundMessage } from './inbound';
 import { detectExplicitLang, detectLang, dominantLang, requestedReplyLanguage, type DetectedLang } from './lang';
 import { narraApi, type NarraApi, type NarraEvent, type NarraRoom } from './narra-api';
@@ -133,7 +133,6 @@ async function remindPending(store: Store, sink: Sink, room: NarraRoom, now: num
 }
 const pennyKey = (id: string) => `penny:${id}`;
 const lastAgentAnswerKey = (id: string) => `last-agent-answer:${id}`;
-const RESTATE_RE = /看不懂英文|[給给]我看中文|翻[譯译]成\s*(?:中文|英文|繁[體体]|简体|簡體)|\b(?:translate|restate)\b.{0,40}\b(?:in|into)\s+(?:chinese|english|mandarin)\b/i;
 const recentKey = (id: string) => `recent:${id}`;
 const redactedKey = (id: string) => `redacted:${id}`;
 const latestKey = (id: string) => `latest:${id}`;
@@ -259,12 +258,13 @@ export async function handleEvents(
 
   for (let i = 0; i < fresh.length; i++) {
     const event = fresh[i];
-    if (!redactedSet.has(event.event_id) && isNarraAgent(event.sender) && event.type === 'm.room.message' &&
-        event.content?.msgtype === 'm.text' && typeof event.origin_server_ts === 'number') {
+    if (!redactedSet.has(event.event_id) && (event.sender === agentId || isNarraAgent(event.sender)) &&
+        event.type === 'm.room.message' && (event.content?.msgtype === 'm.text' || event.content?.msgtype === 'm.notice') &&
+        typeof event.content.body === 'string' && event.content.body.trim()) {
       const relation = (event.content['m.relates_to'] ?? {}) as Record<string, unknown>;
       const eventId = relation.rel_type === 'm.replace' && typeof relation.event_id === 'string'
         ? relation.event_id : event.event_id;
-      if (!redactedSet.has(eventId)) lastAgentAnswer = { eventId, timestamp: event.origin_server_ts };
+      if (!redactedSet.has(eventId)) lastAgentAnswer = { eventId, timestamp: event.origin_server_ts ?? now };
     }
     if (event.sender === agentId) {
       // Remember Penny's own recent messages, so a reply or 👍 to one reaches her. An edit
@@ -360,16 +360,16 @@ export async function handleEvents(
       }
     }
 
-    if (message.kind === undefined && RESTATE_RE.test(message.text) &&
+    if (message.kind === undefined && isRestatementRequest(message.text) &&
         (message.replyToPenny !== undefined || (message.chatType === 'group' && !message.replyTo &&
           message.mentions.every((id) => id === agentId) && lastAgentAnswer &&
-          typeof event.origin_server_ts === 'number' && event.origin_server_ts >= lastAgentAnswer.timestamp &&
-          event.origin_server_ts - lastAgentAnswer.timestamp <= 180_000))) {
+          Date.parse(message.time) >= lastAgentAnswer.timestamp &&
+          Date.parse(message.time) - lastAgentAnswer.timestamp <= 180_000))) {
       const previous = message.replyToPenny ?? mine.find((m) => m.eventId === lastAgentAnswer?.eventId)?.text;
       if (previous) message.restatePenny = previous;
     }
 
-    const classified = message.restatePenny ? 'called' : classify(message, { matrixId: agentId, names: ['Penny', ...names] });
+    const classified = classify(message, { matrixId: agentId, names: ['Penny', ...names] });
     // A bare "好" or "OK" is an answer to Penny only while she is waiting for one.
     const verdict: Verdict = classified === 'answer' ? ((await sink.hasPending(room.roomId)) ? 'called' : 'skip') : classified;
     if (verdict === 'skip' && message.chatType === 'group' && message.kind !== 'reaction' && !isNarraAgent(message.senderId)) {

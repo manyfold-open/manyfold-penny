@@ -1,4 +1,4 @@
-import { splitPreview } from '../src/worker/gateway/split-preview';
+import { restateSplitPreview, splitPreview } from '../src/worker/gateway/split-preview';
 /**
  * The Narra gateway: parsing, the filter, the per-room queue and the webhook route.
  */
@@ -627,6 +627,19 @@ it('previews a read-only equal split with a spelled-out headcount', () => {
     text: 'Penny, split £57 equally among three people. Do not record it.',
   });
   expect(answer).toBe('£19 each for 3 people. Nothing was recorded.');
+});
+
+it('keeps currency in an unowned restatement out of expense intake', () => {
+  const message = {
+    eventId: '$rewrite', roomId: '!a:x', roomName: 'Test', chatType: 'group' as const,
+    senderId: '@mei:x', senderName: 'Mei', time: '2026-11-23T17:00:00Z', mentions: [],
+    text: '刚才 £21 那句英文，能不能给我看中文？',
+  };
+  const bot = { matrixId: '@agent-54ebea3a:matrix.netmind.chat', names: ['Penny'] };
+  expect(classify(message, bot)).toBe('skip');
+  const owned = { ...message, restatePenny: '£21 each for 3 people. Nothing was recorded.' };
+  expect(classify(owned, bot)).toBe('called');
+  expect(restateSplitPreview(owned)).toBe('3 人均分，每人 £21。这笔没记账。');
 });
 
 describe('the poller', () => {
