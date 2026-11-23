@@ -822,6 +822,43 @@ describe('the poller', () => {
     expect(delivered.map((m) => [m.eventId, m.shouldQuote])).toEqual([['$r2', true]]);
   });
 
+  it('delivers only Penny’s compound hint and keeps hidden hints out of human quoting context', async () => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api } = fakeApi(pages);
+    const delivered: InboundMessage[] = [];
+    const sink: Sink = {
+      botNames: async () => [],
+      hasPending: async () => false,
+      deliver: async (message) => { delivered.push(message); },
+      log: () => undefined,
+    };
+    const hint = (eventId: string, agentId: string): NarraEvent => {
+      const body = '[internal hint] process compound $receipt';
+      return {
+        ...text(eventId, body),
+        content: {
+          msgtype: 'm.text',
+          body,
+          'm.mentions': { user_ids: [agentId] },
+          'ai.netmind.hint': { kind: 'compound_trigger', target_event_id: '$receipt' },
+          'ai.netmind.visibility': { status: 'hidden' },
+        },
+      };
+    };
+    await tick(store, api, sink, 1_000_000);
+    pages['!a:x'].push(
+      text('$question', '@Penny 誰欠誰'),
+      hint('$other-hint', '@agent-other:matrix.netmind.chat'),
+      hint('$penny-hint', PENNY),
+    );
+    await tick(store, api, sink, 1_000_000 + ACTIVE_EVERY_MS);
+    expect(delivered.map(({ eventId, shouldQuote }) => [eventId, shouldQuote])).toEqual([
+      ['$question', false],
+      ['$penny-hint', false],
+    ]);
+  });
+
   it('tracks per-person trilingual language and attaches replyToOther parent context', async () => {
     const store = new MemoryStore();
     const pages = { '!a:x': [] as NarraEvent[] };
@@ -1134,4 +1171,32 @@ describe('trilingual language detection (detectLang)', () => {
     expect(detectLang('晚餐 120 我付', 'en', 'zh-Hans')).toBe('zh-Hans');
     expect(detectLang('晚餐 120 我付', 'en', 'en')).toBe('zh-Hant');
   });
+});
+
+it('speaks only on its own topic in mixed group chatter', async () => {
+  const cases = [
+    '晚上能吃啥',
+    '我先去開個會',
+    '今晚倫敦有什麼市集',
+    '今天 AI 圈有啥新消息',
+    '能抽張塔羅看看工作嗎',
+    '幫我求一支籤',
+    '有英國簽證資料可以查嗎',
+    '晚餐 £80 我付的，四個人怎麼分',
+    'Boots 有折扣碼嗎',
+    '昨天吃火鍋超爽',
+  ];
+  const replies: string[] = [];
+  for (const text of cases) {
+    if (classify(msg(text), BOT) !== 'skip') replies.push(text);
+  }
+  expect(replies).toEqual(["晚餐 £80 我付的，四個人怎麼分"]);
+});
+
+
+it('leaves split questions addressed to another person to that person', () => {
+  const question = '請問誰欠誰？';
+  expect(classify(msg(question), BOT)).toBe('question');
+  expect(classify(msg('@Ken ' + question, { mentions: ['@ken:x'] }), BOT)).toBe('skip');
+  expect(classify(msg(question, { replyTo: '$ken' }), BOT)).toBe('skip');
 });
