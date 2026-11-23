@@ -73,23 +73,15 @@ export function parseInbound(raw: unknown): InboundMessage | null {
   if (type === 'm.reaction') return parseReaction(outer, event, content);
   if (type && type !== 'm.room.message') return null;
   const msgtype = str(content.msgtype);
-  const compoundKey = 'ai.netmind.compound';
-  const rawCompound = content[compoundKey];
-  const compound = msgtype === compoundKey && rawCompound && typeof rawCompound === 'object'
-    ? rawCompound as Record<string, unknown> : null;
-  const compoundImage = compound && /^image\//i.test(str(compound.mime_type)) &&
-    (str(compound.media_url).startsWith('mxc://') || Boolean(compound.file && typeof compound.file === 'object'));
-  if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice' && msgtype !== 'm.image' && !compoundImage) return null;
-  const image = msgtype === 'm.image' || compoundImage;
+  if (msgtype && msgtype !== 'm.text' && msgtype !== 'm.notice' && msgtype !== 'm.image') return null;
+  const image = msgtype === 'm.image';
 
   const roomId = str(pick(event, 'room_id', 'roomId') ?? pick(outer, 'room_id', 'roomId'));
   const eventId = str(pick(event, 'event_id', 'eventId', 'message_id', 'messageId'));
   const senderId = str(pick(event, 'sender', 'sender_id', 'senderId'));
   const relates = (content['m.relates_to'] ?? {}) as Record<string, unknown>;
   const replyTo = str(((relates['m.in_reply_to'] ?? {}) as Record<string, unknown>).event_id);
-  let text = compoundImage
-    ? str(compound!.text) || str(compound!.file_name)
-    : str(pick(content, 'body') ?? pick(event, 'text', 'body'));
+  let text = str(pick(content, 'body') ?? pick(event, 'text', 'body'));
   if (replyTo) text = stripReplyFallback(text);
   if (!roomId.startsWith('!') || !eventId || !senderId.startsWith('@')) {
     throw new InboundError('A message needs room_id (!…), event_id and sender (@…).');
