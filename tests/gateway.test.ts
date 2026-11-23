@@ -1,3 +1,4 @@
+import { splitPreview } from '../src/worker/gateway/split-preview';
 /**
  * The Narra gateway: parsing, the filter, the per-room queue and the webhook route.
  */
@@ -617,6 +618,15 @@ describe('txn ids', () => {
     expect(await txnId('$e1')).toBe(a);
     expect(await txnId('$e2')).not.toBe(a);
   });
+});
+
+it('previews a read-only equal split with a spelled-out headcount', () => {
+  const answer = splitPreview({
+    eventId: '$preview', roomId: '!a:x', roomName: 'Test', chatType: 'group', senderId: '@mei:x',
+    senderName: 'Mei', time: '2026-11-23T17:00:00Z', mentions: [],
+    text: 'Penny, split £57 equally among three people. Do not record it.',
+  });
+  expect(answer).toBe('£19 each for 3 people. Nothing was recorded.');
 });
 
 describe('the poller', () => {
