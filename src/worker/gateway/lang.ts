@@ -191,6 +191,14 @@ export function detectExplicitLang(text: string): DetectedLang | 'zh' | null {
   return null;
 }
 
+/** An explicit response-language request at the end of this turn. */
+export function requestedReplyLanguage(text: string): DetectedLang | undefined {
+  const request = /(?:請|请|能不能|可以)?\s*(?:用|以)\s*(英文|英語|英语|簡體(?:中文)?|简体(?:中文)?|繁體(?:中文)?|繁体(?:中文)?)\s*(?:回答|回覆|回复|重[說说])\s*[。.!！?？]*\s*$/.exec(text)?.[1];
+  if (!request) return undefined;
+  if (request.startsWith('英')) return 'en';
+  return /^[簡简]/.test(request) ? 'zh-Hans' : 'zh-Hant';
+}
+
 /**
  * Classify a message as 'zh-Hant', 'zh-Hans', or 'en', using the speaker's history and the
  * room's dominant language as fallbacks for ambiguous or stripped messages.
@@ -200,6 +208,8 @@ export function detectLang(
   userHistoryLang?: DetectedLang,
   roomHistoryLang?: DetectedLang,
 ): DetectedLang {
+  const requested = requestedReplyLanguage(text);
+  if (requested) return requested;
   const explicit = detectExplicitLang(text);
   if (explicit === 'en' || explicit === 'zh-Hans' || explicit === 'zh-Hant') return explicit;
   if (explicit === 'zh') {

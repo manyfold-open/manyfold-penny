@@ -18,7 +18,7 @@ import type { Env } from '../types';
 import { defuse } from './envelope';
 import { classify, isNarraAgent, type Verdict } from './filter';
 import { parseInbound, parseRedaction, type InboundMessage } from './inbound';
-import { detectExplicitLang, detectLang, dominantLang, type DetectedLang } from './lang';
+import { detectExplicitLang, detectLang, dominantLang, requestedReplyLanguage, type DetectedLang } from './lang';
 import { narraApi, type NarraApi, type NarraEvent, type NarraRoom } from './narra-api';
 import { NarraError } from './reply';
 import type { Store } from './queue';
@@ -326,7 +326,7 @@ export async function handleEvents(
     } else {
       const detected = detectLang(message.text, userHistoryLang, roomHistoryLang);
       message.detectedLang = detected;
-      if (detectExplicitLang(message.text) !== null) {
+      if (!requestedReplyLanguage(message.text) && detectExplicitLang(message.text) !== null) {
         userLangCache.set(message.senderId, detected);
         await store.put(userLangKey(room.roomId, message.senderId), detected);
         const nextRecent = [...(roomLangState?.recent ?? []), detected].slice(-ROOM_LANG_REMEMBERS);

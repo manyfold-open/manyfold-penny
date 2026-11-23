@@ -1195,6 +1195,7 @@ describe('what reaches Penny and what she posts', () => {
 describe('trilingual language detection (detectLang)', () => {
   it('classifies zh-Hant, zh-Hans, and en while stripping mentions, URLs, numbers, and neutral tokens', () => {
     expect(detectLang('這週花了多少')).toBe('zh-Hant');
+    expect(detectLang('三个人平分 £57。请用英文回答。')).toBe('en');
     expect(detectLang('这周花了多少')).toBe('zh-Hans');
     expect(detectLang('How much did we spend?')).toBe('en');
     // Mentions, URLs, numbers, and short confirmations/brands fall back to user -> room -> zh-Hant.
