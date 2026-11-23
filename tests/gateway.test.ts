@@ -1,3 +1,4 @@
+import { splitPreview } from '../src/worker/gateway/split-preview';
 /**
  * The Narra gateway: parsing, the filter, the per-room queue and the webhook route.
  */
@@ -619,6 +620,15 @@ describe('txn ids', () => {
   });
 });
 
+it('previews a read-only equal split with a spelled-out headcount', () => {
+  const answer = splitPreview({
+    eventId: '$preview', roomId: '!a:x', roomName: 'Test', chatType: 'group', senderId: '@mei:x',
+    senderName: 'Mei', time: '2026-11-23T17:00:00Z', mentions: [],
+    text: 'Penny, split £57 equally among three people. Do not record it.',
+  });
+  expect(answer).toBe('£19 each for 3 people. Nothing was recorded.');
+});
+
 describe('the poller', () => {
   const PENNY = '@agent-54ebea3a:matrix.netmind.chat';
   const room = (roomId: string, type: 'group' | 'dm' = 'group') => ({
@@ -1195,6 +1205,7 @@ describe('what reaches Penny and what she posts', () => {
 describe('trilingual language detection (detectLang)', () => {
   it('classifies zh-Hant, zh-Hans, and en while stripping mentions, URLs, numbers, and neutral tokens', () => {
     expect(detectLang('這週花了多少')).toBe('zh-Hant');
+    expect(detectLang('三个人平分 £57。请用英文回答。')).toBe('en');
     expect(detectLang('这周花了多少')).toBe('zh-Hans');
     expect(detectLang('How much did we spend?')).toBe('en');
     // Mentions, URLs, numbers, and short confirmations/brands fall back to user -> room -> zh-Hant.

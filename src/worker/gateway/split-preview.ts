@@ -6,6 +6,7 @@ const CALCULATE_ONLY = /(?:只|就)算(?:一下)?(?:就好|就行)?|算一下就
 const EQUAL_SPLIT = /均分|平分|平均分|\bsplit\b.{0,40}\bequally\b/i;
 const GROUP_SIZE = /(?<![\d零一二兩两三四五六七八九十百千])([1-9]\d?|[二兩两三四五六七八九十])\s*(?:[個个位]?人|people\b)/i;
 const CHINESE_COUNTS = '一二三四五六七八九十';
+const ENGLISH_COUNTS = ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 
 export function isReadOnlySplit(message: InboundMessage): boolean {
   return message.kind === undefined && CALCULATE_ONLY.test(message.text) && EQUAL_SPLIT.test(message.text);
@@ -20,14 +21,17 @@ export function splitPreview(message: InboundMessage): string | null {
       : '總金額、幣別和人數是多少？我只幫你算。';
 
   const amounts = [...text.matchAll(/([£€$])\s*(\d+(?:,\d{3})*)(?:\.(\d{1,2}))?(?![\d.]|,\d)/g)];
-  const groups = [...text.matchAll(new RegExp(GROUP_SIZE.source, 'gi'))];
+  const groups = [
+    ...text.matchAll(new RegExp(GROUP_SIZE.source, 'gi')),
+    ...text.matchAll(/(?<![A-Za-z-])(?<!\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)(?:\s+and)?\s+)(one|two|three|four|five|six|seven|eight|nine|ten)\s+people\b/gi),
+  ];
   const amount = amounts[0];
   const group = groups[0];
   if (amounts.length !== 1 || groups.length !== 1 || !amount || !group) return clarification;
 
   const [, symbol, whole, fraction = ''] = amount;
   const countWord = group[1]!;
-  const count = Number(countWord) || (/[兩两]/.test(countWord) ? 2 : CHINESE_COUNTS.indexOf(countWord) + 1);
+  const count = Number(countWord) || (/[兩两]/.test(countWord) ? 2 : CHINESE_COUNTS.indexOf(countWord) + 1) || ENGLISH_COUNTS.indexOf(countWord.toLowerCase()) + 1;
   const total = Number(whole!.replaceAll(',', '')) * 100 + Number(fraction.padEnd(2, '0'));
   if (count < 2 || !Number.isSafeInteger(total) || total <= 0 || total > MAX_AMOUNT) return clarification;
 
