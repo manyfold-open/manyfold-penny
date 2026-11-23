@@ -251,7 +251,9 @@ describe('the room queue', () => {
     const remainder = msg('£10，三個人平分，只算就好。', { eventId: '$split-remainder' });
     expect(classify(first, BOT)).toBe('question');
     expect(classify(msg(prompt, { replyTo: '$ken' }), BOT)).toBe('skip');
-    for (const message of [first, remainder]) {
+    const unclear = msg('£10 或 £12，三個人平分，只算就好。', { eventId: '$split-unclear' });
+    expect(classify(unclear, BOT)).toBe('question');
+    for (const message of [first, remainder, unclear]) {
       await enqueue(store, { message, verdict: 'question', enqueuedAt: Date.now() });
     }
     await drain(store, d);
@@ -259,6 +261,7 @@ describe('the room queue', () => {
     expect(d.posted).toEqual([
       '3 人均分，每人 £26。這筆沒記帳。',
       '1 人各付 £3.34，2 人各付 £3.33。這筆沒記帳。',
+      '總金額、幣別和人數是多少？我只幫你算。',
     ]);
   });
 
