@@ -16,6 +16,7 @@
 import { safeErrorText } from '../a2a';
 import type { Env } from '../types';
 import { NarraError } from './reply';
+import { fetchWithDeadline } from './deadline';
 
 export interface NarraRoom {
   roomId: string;
@@ -55,7 +56,7 @@ export function narraApi(env: Env): NarraApi {
     for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v);
     let response: Response;
     try {
-      response = await fetch(url, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
+      response = await fetchWithDeadline(url, { headers: { authorization: `Bearer ${token}` } }, 15_000);
     } catch (error) {
       throw new NarraError(`Narra unreachable: ${safeErrorText(error instanceof Error ? error.message : error)}`, true);
     }
