@@ -35,6 +35,8 @@ export interface InboundMessage {
   replyToPenny?: string;
   /** A gateway-verified request to restate a previous Penny answer without changing the ledger. */
   restatePenny?: string;
+  /** Fully computed read-only correction from the preceding trial split. */
+  correctedSplitPreview?: string;
   /** Another person's message that replyTo points at ("<sender>: <snippet>"), filled in by the poller. */
   replyToOther?: string;
   /** Set only on a nudge the gateway made up (verdict 'nudge'): why Penny should speak. */

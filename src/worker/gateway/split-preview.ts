@@ -28,6 +28,37 @@ export function restateSplitPreview(message: InboundMessage): string | null {
   return zh ? equalSplitReply(zh[2]!, zh[1]!, lang) : null;
 }
 
+function groupSizeMatches(text: string) {
+  return [
+    ...text.matchAll(new RegExp(GROUP_SIZE.source, 'gi')),
+    ...text.matchAll(/(?<![A-Za-z-])(?<!\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)(?:\s+and)?\s+)(one|two|three|four|five|six|seven|eight|nine|ten)\s+people\b/gi),
+  ];
+}
+
+export function isReadOnlyHeadcountCorrection(message: InboundMessage): boolean {
+  const text = message.text.normalize('NFKC');
+  return message.kind === undefined && CALCULATE_ONLY.test(text) &&
+    /(?:[說说]錯了|[說说]错了|其[實实]是|改成|重算)|\b(?:actually|correction|recalculate)\b/i.test(text) &&
+    !/[£€$]/.test(text) && groupSizeMatches(text).length === 1;
+}
+
+export function correctSplitPreview(message: InboundMessage, priorQuestion: string, priorAnswer: string): string | null {
+  if (!isReadOnlyHeadcountCorrection(message)) return null;
+  if (!/[£€$]\d/.test(priorAnswer)) return null;
+  const source = { ...message, text: priorQuestion };
+  const priorComputed = (['en', 'zh-Hans', 'zh-Hant'] as const)
+    .some((detectedLang) => splitPreview({ ...source, detectedLang }) === priorAnswer);
+  if (!priorComputed) return null;
+  const original = groupSizeMatches(priorQuestion.normalize('NFKC'))[0];
+  const correction = groupSizeMatches(message.text.normalize('NFKC'))[0];
+  if (original?.index === undefined || !correction) return null;
+  const text = priorQuestion.normalize('NFKC');
+  return splitPreview({
+    ...message,
+    text: text.slice(0, original.index) + correction[0] + text.slice(original.index + original[0].length),
+  });
+}
+
 export function splitPreview(message: InboundMessage): string | null {
   if (!isReadOnlySplit(message)) return null;
   const text = message.text.normalize('NFKC');
@@ -37,10 +68,7 @@ export function splitPreview(message: InboundMessage): string | null {
       : '總金額、幣別和人數是多少？我只幫你算。';
 
   const amounts = [...text.matchAll(/([£€$])\s*(\d+(?:,\d{3})*)(?:\.(\d{1,2}))?(?![\d.]|,\d)/g)];
-  const groups = [
-    ...text.matchAll(new RegExp(GROUP_SIZE.source, 'gi')),
-    ...text.matchAll(/(?<![A-Za-z-])(?<!\b(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)(?:\s+and)?\s+)(one|two|three|four|five|six|seven|eight|nine|ten)\s+people\b/gi),
-  ];
+  const groups = groupSizeMatches(text);
   const amount = amounts[0];
   const group = groups[0];
   if (amounts.length !== 1 || groups.length !== 1 || !amount || !group) return clarification;
