@@ -7,7 +7,7 @@
  */
 
 import type { InboundMessage } from './inbound';
-import { isReadOnlySplit } from './split-preview';
+import { isReadOnlyHeadcountCorrection, isReadOnlySplit } from './split-preview';
 
 /** 'question': a question to the group about money owed, without @Penny. 'nudge': no one wrote
  *  it; the gateway asks Penny to speak up on her own (see poller.ts). */
@@ -88,7 +88,8 @@ export function classify(message: InboundMessage, bot: BotIdentity): Classified 
   if (isNarraAgent(message.senderId)) return 'skip';
   // A reaction counts only as an OK to one of Penny's own messages.
   if (message.kind === 'reaction') return message.replyToPenny !== undefined && APPROVE.has(bareEmoji(message.text).trim()) ? 'called' : 'skip';
-  if (message.restatePenny !== undefined) return 'called';
+  if (message.restatePenny !== undefined || message.correctedSplitPreview !== undefined) return 'called';
+  if (message.chatType === 'group' && isReadOnlyHeadcountCorrection(message)) return 'skip';
   // A currency amount inside a translation request cannot be a proposed spend.
   if (message.chatType === 'group' && isRestatementRequest(message.text)) return 'skip';
   if (message.chatType === 'dm') return 'called';

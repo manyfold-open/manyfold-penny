@@ -21,6 +21,7 @@ import { parseInbound, parseRedaction, type InboundMessage } from './inbound';
 import { detectExplicitLang, detectLang, dominantLang, requestedReplyLanguage, type DetectedLang } from './lang';
 import { narraApi, type NarraApi, type NarraEvent, type NarraRoom } from './narra-api';
 import { NarraError } from './reply';
+import { correctSplitPreview, isReadOnlyHeadcountCorrection } from './split-preview';
 import type { Store } from './queue';
 import { addSample, summarizeAll, type Samples } from './metrics';
 import { dailyFromLedger } from './daily';
@@ -374,6 +375,18 @@ export async function handleEvents(
           Date.parse(message.time) - lastAgentAnswer.timestamp <= 180_000))) {
       const previous = message.replyToPenny ?? mine.find((m) => m.eventId === lastAgentAnswer?.eventId)?.text;
       if (previous) message.restatePenny = previous;
+    }
+
+    if (message.chatType === 'group' && !message.replyTo && lastAgentAnswer &&
+        message.mentions.every((id) => id === agentId) &&
+        Date.parse(message.time) >= lastAgentAnswer.timestamp &&
+        Date.parse(message.time) - lastAgentAnswer.timestamp <= 180_000 &&
+        isReadOnlyHeadcountCorrection(message)) {
+      const previous = mine.find((m) => m.eventId === lastAgentAnswer?.eventId);
+      const question = recent.at(-2);
+      if (previous && question?.senderId === message.senderId) {
+        message.correctedSplitPreview = correctSplitPreview(message, question.text, previous.text) ?? undefined;
+      }
     }
 
     const classified = classify(message, { matrixId: agentId, names: ['Penny', ...names] });

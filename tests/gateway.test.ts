@@ -719,6 +719,32 @@ describe('the poller', () => {
     ]);
   });
 
+  it.each([
+    ['@mei:x', ['4 人均分，每人 £21。這筆沒記帳。']],
+    ['@ken:x', []],
+  ])('only uses the sender’s previous read-only split for a correction from %s', async (sender, expected) => {
+    const store = new MemoryStore();
+    const pages = { '!a:x': [] as NarraEvent[] };
+    const { api } = fakeApi(pages);
+    const { s } = sink();
+    const corrections: string[] = [];
+    s.deliver = async (message, verdict) => {
+      if (message.correctedSplitPreview) {
+        expect(verdict).toBe('called');
+        corrections.push(message.correctedSplitPreview);
+      }
+    };
+    const now = 1_000_000;
+    await tick(store, api, s, now);
+    pages['!a:x'].push(
+      text('$split', '£84，三個人平分，只算就好，不用記帳。'),
+      text('$answer', '3 人均分，每人 £28。這筆沒記帳。', PENNY),
+      text('$correction', '我說錯了，其實是四個人，數字重算一下就好，不用記帳。', sender),
+    );
+    await tick(store, api, s, now + ACTIVE_EVERY_MS);
+    expect(corrections).toEqual(expected);
+  });
+
   it('restates Penny’s latest answer without adopting another agent’s answer', async () => {
     const store = new MemoryStore();
     const pages = { '!a:x': [] as NarraEvent[] };
