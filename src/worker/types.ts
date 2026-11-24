@@ -39,6 +39,13 @@ export interface Env {
   NARRA_SYNC?: string;
   /** The single /sync reader (Durable Object MatrixSync). */
   MATRIX_SYNC?: DurableObjectNamespace;
+  /** "push": Synapse wakes MatrixSync per new event instead of a 24/7 long-poll (gateway/sync.ts).
+   *  Needs NARRA_PUSH_URL and NARRA_PUSH_SECRET; anything else keeps long-polling. */
+  NARRA_SYNC_MODE?: string;
+  /** https origin whose root this Worker serves; the pusher URL is <origin>/_matrix/push/v1/notify. */
+  NARRA_PUSH_URL?: string;
+  /** Random secret (>= 16 chars); the pusher's pushkey is derived from it. */
+  NARRA_PUSH_SECRET?: string;
 }
 
 /** Everything needed to talk to one agent over A2A. */

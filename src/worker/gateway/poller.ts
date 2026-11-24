@@ -37,6 +37,13 @@ const BACKOFF_MS = 30_000;
 export const SYNC_FRESH_MS = 90_000;
 /** ...and each room is read only this often, to catch what /sync may hold back. */
 export const BACKSTOP_EVERY_MS = 60_000;
+/** While MatrixSync runs in push mode, the backstop read and the idle wake come this rarely: the
+ *  poller no longer has to keep the Durable Object awake around the clock. */
+export const PUSH_BACKSTOP_EVERY_MS = 5 * 60_000;
+export const PUSH_IDLE_EVERY_MS = 60_000;
+/** A room MatrixSync just joined from an invite: /sync may hand over its first messages. */
+const JOINED_FRESH_MS = 10 * 60_000;
+const joinedKey = (id: string) => `joined:${id}`;
 /** An entry waiting this long for its OK gets one reminder, the next time someone talks. */
 export const PENDING_STALE_MS = 3 * 60 * 60_000;
 /** At most one reminder per room in this long. */
@@ -394,9 +401,15 @@ export async function handleEvents(
 }
 
 /** How long until a room is read again. While /sync is delivering, reading is only a backstop. */
+/** Whether /sync is alive and woken by pushes, so the poller can mostly sleep. */
+async function pushHealthy(store: Store, now: number): Promise<boolean> {
+  const syncAt = (await store.get<number>('syncAt')) ?? 0;
+  return now - syncAt < SYNC_FRESH_MS && (await store.get<boolean>('syncPush')) === true;
+}
+
 async function nextReadIn(store: Store, s: RoomState, now: number): Promise<number> {
   const syncAt = (await store.get<number>('syncAt')) ?? 0;
-  if (now - syncAt < SYNC_FRESH_MS) return BACKSTOP_EVERY_MS;
+  if (now - syncAt < SYNC_FRESH_MS) return (await pushHealthy(store, now)) ? PUSH_BACKSTOP_EVERY_MS : BACKSTOP_EVERY_MS;
   return now - s.lastActivity < ACTIVE_FOR_MS ? ACTIVE_EVERY_MS : IDLE_EVERY_MS;
 }
 
@@ -411,14 +424,24 @@ export interface SyncedRoom {
  * New events from Matrix /sync (see sync.ts). Rooms the poller has not started yet are left
  * to it: it starts each room from "now" and welcomes new groups.
  */
-export async function ingest(store: Store, sink: Sink, rooms: SyncedRoom[], now = Date.now()): Promise<void> {
+export async function ingest(store: Store, sink: Sink, rooms: SyncedRoom[], now = Date.now(), push = false): Promise<void> {
   await store.put('syncAt', now);
+  await store.put('syncPush', push);
   const state = await store.get<RoomsState>('rooms');
   if (!state) return;
   for (const synced of rooms) {
     const room = state.rooms.find((r) => r.roomId === synced.roomId);
-    const s = await store.get<RoomState>(roomKey(synced.roomId));
-    if (!room || !s?.cursor) continue;
+    let s = await store.get<RoomState>(roomKey(synced.roomId));
+    if (!room) continue;
+    if (!s?.cursor) {
+      // Not started yet. Only a room MatrixSync just joined from an invite is read from /sync now,
+      // so the message that came with the invite (a new user's first DM) is answered; the poller
+      // then starts the room from "now" as usual, and handled ids keep it from answering twice.
+      const joinedAt = await store.get<number>(joinedKey(synced.roomId));
+      if (!joinedAt || now - joinedAt > JOINED_FRESH_MS || synced.events.length === 0) continue;
+      await store.delete(joinedKey(synced.roomId));
+      s = s ?? { cursor: null, nextPollAt: now, lastActivity: now };
+    }
     if (await handleEvents(store, sink, room, state.agentId, synced.events, now)) s.lastActivity = now;
     if (synced.limited) s.nextPollAt = now;
     await store.put(roomKey(synced.roomId), s);
@@ -470,7 +493,10 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
     if (s.nextPollAt <= now && (!due || s.nextPollAt < due.s.nextPollAt)) due = { room, s };
     soonest = Math.min(soonest, s.nextPollAt);
   }
-  if (!due) return Math.max(TICK_MS, Math.min(soonest - now, IDLE_EVERY_MS));
+  if (!due) {
+    const idle = (await pushHealthy(store, now)) ? PUSH_IDLE_EVERY_MS : IDLE_EVERY_MS;
+    return Math.max(TICK_MS, Math.min(soonest - now, idle));
+  }
 
   const { room, s } = due;
   try {
@@ -499,6 +525,18 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
   }
   await store.put(roomKey(room.roomId), s);
   return TICK_MS;
+}
+
+/** Rooms MatrixSync just joined: refresh the room list now and let ingest read their first messages. */
+export async function markJoined(store: Store, api: NarraApi, roomIds: string[], now = Date.now()): Promise<void> {
+  if (roomIds.length === 0) return;
+  for (const roomId of roomIds) await store.put(joinedKey(roomId), now);
+  try {
+    const { agentId, rooms } = await api.rooms();
+    await store.put('rooms', { refreshedAt: now, agentId, rooms } satisfies RoomsState);
+  } catch {
+    // The next tick refreshes the room list anyway (ROOMS_EVERY_MS).
+  }
 }
 
 const LOG_LINES = 30;
@@ -545,12 +583,22 @@ export class NarraPoller {
     const path = request ? new URL(request.url).pathname : '';
     if (request?.method === 'POST' && path.endsWith('/events')) {
       // A batch from MatrixSync. One at a time, so two batches never interleave.
-      const body = (await request.json().catch(() => null)) as { rooms?: SyncedRoom[] } | null;
+      const body = (await request.json().catch(() => null)) as { rooms?: SyncedRoom[]; push?: boolean } | null;
       if (!body || !Array.isArray(body.rooms)) return new Response('bad batch', { status: 400 });
       await this.state.blockConcurrencyWhile(async () => {
         const { sink, flush } = this.sink();
-        await ingest(this.store(), sink, body.rooms!);
+        await ingest(this.store(), sink, body.rooms!, Date.now(), body.push === true);
         await flush();
+      });
+      return Response.json({ ok: true });
+    }
+    if (request?.method === 'POST' && path.endsWith('/joined')) {
+      // MatrixSync joined these rooms from invites: learn them now (room list), so the next /sync
+      // batch can hand over their first messages (see ingest).
+      const body = (await request.json().catch(() => null)) as { roomIds?: unknown } | null;
+      const roomIds = Array.isArray(body?.roomIds) ? body!.roomIds.filter((r): r is string => typeof r === 'string') : [];
+      await this.state.blockConcurrencyWhile(async () => {
+        await markJoined(this.store(), narraApi(this.env), roomIds);
       });
       return Response.json({ ok: true });
     }

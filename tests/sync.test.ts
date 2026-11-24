@@ -5,9 +5,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { InboundMessage } from '../src/worker/gateway/inbound';
 import type { NarraApi, NarraEvent, NarraRoom } from '../src/worker/gateway/narra-api';
-import { BACKSTOP_EVERY_MS, ingest, SYNC_FRESH_MS, tick, TICK_MS, type Sink } from '../src/worker/gateway/poller';
+import { BACKSTOP_EVERY_MS, ingest, markJoined, PUSH_BACKSTOP_EVERY_MS, PUSH_IDLE_EVERY_MS, SYNC_FRESH_MS, tick, TICK_MS, type Sink } from '../src/worker/gateway/poller';
 import { noteText, wantsNote, type Store } from '../src/worker/gateway/queue';
-import { fetchLogin, SYNC_TIMEOUT_MS, SyncError, syncOnce, type MatrixLogin, type SyncDeps, type SyncResponse } from '../src/worker/gateway/sync';
+import { fetchLogin, handlePushRequest, pushKey, pushNotifyUrl, SYNC_TIMEOUT_MS, SyncError, syncOnce, type MatrixLogin, type SyncDeps, type SyncResponse } from '../src/worker/gateway/sync';
 import type { Env } from '../src/worker/types';
 
 class MemoryStore implements Store {
@@ -203,6 +203,103 @@ describe('the poller with /sync', () => {
     await tick(quiet.store, quiet.api, quiet.s, 1_000_000);
     await ingest(quiet.store, quiet.s, [{ roomId: '!a:x', events: [text('$1', '@Penny hello')] }], 1_000_500);
     expect(quiet.delivered[0].message.crowded).toBeUndefined();
+  });
+});
+
+describe('push mode', () => {
+  const room = (roomId: string): NarraRoom => ({ roomId, type: 'dm', title: '', memberCount: 2, names: {} });
+  const sinkFor = (delivered: string[]): Sink => ({
+    botNames: async () => [],
+    hasPending: async () => false,
+    deliver: async (message) => {
+      delivered.push(message.text);
+    },
+    log: () => undefined,
+  });
+
+  it('sleeps far longer between backstop reads while /sync is woken by pushes', async () => {
+    const store = new MemoryStore();
+    const api: NarraApi = { rooms: async () => ({ agentId: PENNY, rooms: [room('!a:x')] }), head: async () => 't0', after: async () => ({ events: [], next: null }) };
+    const s = sinkFor([]);
+    const now = 1_000_000;
+    await tick(store, api, s, now);
+    await ingest(store, s, [], now, true);
+    await tick(store, api, s, now + 8_000);
+    expect((await store.get<{ nextPollAt: number }>('room:!a:x'))!.nextPollAt).toBe(now + 8_000 + PUSH_BACKSTOP_EVERY_MS);
+    // Nothing due: wake once a minute (daily recaps), not every few seconds.
+    expect(await tick(store, api, s, now + 9_000)).toBe(PUSH_IDLE_EVERY_MS);
+  });
+
+  it("answers the first message of a DM it just joined from an invite, once", async () => {
+    const store = new MemoryStore();
+    const pages: NarraEvent[] = [];
+    const api: NarraApi = {
+      rooms: async () => ({ agentId: PENNY, rooms: [room('!dm:x')] }),
+      head: async () => 't0',
+      after: async () => ({ events: pages.splice(0), next: 't1' }),
+    };
+    const delivered: string[] = [];
+    const s = sinkFor(delivered);
+    const now = 1_000_000;
+    // Not started and not joined from an invite: left alone, as before.
+    await store.put('rooms', { refreshedAt: now, agentId: PENNY, rooms: [room('!dm:x')] });
+    await ingest(store, s, [{ roomId: '!dm:x', events: [text('$0', 'hi')] }], now);
+    expect(delivered).toEqual([]);
+
+    await markJoined(store, api, ['!dm:x'], now);
+    await ingest(store, s, [{ roomId: '!dm:x', events: [text('$1', 'Penny 我付了 30')] }], now + 1_000);
+    expect(delivered).toEqual(['Penny 我付了 30']);
+    // The backstop later sees the same message: not answered twice.
+    await tick(store, api, s, now + 2_000);
+    pages.push(text('$1', 'Penny 我付了 30'));
+    await tick(store, api, s, now + 2_000 + BACKSTOP_EVERY_MS);
+    expect(delivered).toEqual(['Penny 我付了 30']);
+  });
+
+  const SECRET = 'penny_push_secret_0123456789';
+  const pushEnv = (overrides: Partial<Env> = {}) => {
+    const woke: string[] = [];
+    const env = {
+      NARRA_GATEWAY: 'poll',
+      NARRA_AGENT_TOKEN: 'tok',
+      PENNY_AGENT_ID: 'agt',
+      NARRA_POLLER: {},
+      ROOM_QUEUE: {},
+      NARRA_SYNC: 'on',
+      NARRA_SYNC_MODE: 'push',
+      NARRA_PUSH_URL: 'https://manyfold-penny.example.workers.dev',
+      NARRA_PUSH_SECRET: SECRET,
+      MATRIX_SYNC: {
+        idFromName: (n: string) => n,
+        get: () => ({
+          fetch: async (url: string) => {
+            woke.push(url);
+            return Response.json({ woke: true });
+          },
+        }),
+      },
+      ...overrides,
+    } as unknown as Env;
+    return { env, woke };
+  };
+  const notify = (pushkey: string, path = '/_matrix/push/v1/notify') =>
+    new Request(`https://manyfold-penny.example.workers.dev${path}`, {
+      method: 'POST',
+      body: JSON.stringify({ notification: { event_id: '$e', devices: [{ pushkey }] } }),
+    });
+
+  it('registers at the exact notify path and wakes MatrixSync only for its own pushkey', async () => {
+    const { env, woke } = pushEnv();
+    expect(pushNotifyUrl(env)).toBe('https://manyfold-penny.example.workers.dev/_matrix/push/v1/notify');
+    const key = (await pushKey(env))!;
+    expect(key).not.toContain(SECRET);
+    expect(await handlePushRequest(new Request('https://manyfold-penny.example.workers.dev/api/x'), env)).toBeNull();
+    expect(await (await handlePushRequest(notify(key), env))!.json()).toEqual({ rejected: [] });
+    expect(woke).toEqual(['https://matrix-sync/push']);
+    expect(await (await handlePushRequest(notify('someone-else'), env))!.json()).toEqual({ rejected: ['someone-else'] });
+    const off = pushEnv({ NARRA_SYNC_MODE: 'longpoll' });
+    expect(await (await handlePushRequest(notify(key), off.env))!.json()).toEqual({ rejected: [key] });
+    expect(off.woke).toEqual([]);
   });
 });
 
