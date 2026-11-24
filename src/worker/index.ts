@@ -46,6 +46,7 @@ import { gatewayEnabled } from './gateway/poller';
 export { RoomQueue } from './gateway/queue';
 export { NarraPoller } from './gateway/poller';
 export { MatrixSync } from './gateway/sync';
+import { handlePushRequest } from './gateway/sync';
 
 const SERVICE = 'manyfold-penny';
 
@@ -251,4 +252,8 @@ async function scheduled(_controller: ScheduledController, env: Env): Promise<vo
   if (env.MATRIX_SYNC) await env.MATRIX_SYNC.get(env.MATRIX_SYNC.idFromName('narra')).fetch('https://matrix-sync/kick');
 }
 
-export default { fetch: app.fetch, scheduled };
+/** Synapse wakes MatrixSync at /_matrix/push/v1/notify (push mode); everything else is the app. */
+const fetchHandler: typeof app.fetch = async (request, env, ctx) =>
+  (env ? await handlePushRequest(request, env as Env) : null) ?? app.fetch(request, env, ctx);
+
+export default { fetch: fetchHandler, scheduled };

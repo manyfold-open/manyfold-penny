@@ -19,7 +19,8 @@
     "directory": "./dist/client",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/share/*"]
+    // /_matrix/* is the Narra push wake (Synapse pusher, see gateway/sync.ts).
+    "run_worker_first": ["/api/*", "/share/*", "/_matrix/*"]
   },
   "d1_databases": [
     {
@@ -53,6 +54,12 @@
     "NARRA_GATEWAY": "poll",
     // Real-time reading through Matrix /sync (gateway/sync.ts). "off" falls back to polling alone.
     "NARRA_SYNC": "on",
+    // Synapse wakes MatrixSync per event instead of a 24/7 /sync long-poll (billed as Durable
+    // Object duration), and the poller sleeps between backstop reads. Synapse only accepts a pusher
+    // at exactly /_matrix/push/v1/notify, so this is the workers.dev hostname (served at its root).
+    // Needs the NARRA_PUSH_SECRET secret (>= 16 chars); without it MatrixSync keeps long-polling.
+    "NARRA_SYNC_MODE": "push",
+    "NARRA_PUSH_URL": "https://manyfold-penny.netmind-ai.workers.dev",
     "PENNY_AGENT_ID": "agt_agq6jhpwszzvfiqu6djcbe2ola"
   }
   // Optional hardening, neither is required to deploy:
