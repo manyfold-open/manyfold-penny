@@ -6,6 +6,7 @@
 import { A2AError, consumeA2AStream, safeErrorText } from '../a2a';
 import { credentialFor } from '../connect';
 import type { Env } from '../types';
+import { fetchWithDeadline } from './deadline';
 
 const TURN_TIMEOUT_MS = 5 * 60_000;
 
@@ -67,12 +68,11 @@ async function narraPost(env: Env, path: string, body: Record<string, unknown>):
   const endpoint = (env.NARRA_API_ENDPOINT ?? 'https://api.netmind.chat').replace(/\/+$/, '');
   let response: Response;
   try {
-    response = await fetch(`${endpoint}/api/agent-runtime/chat/${path}`, {
+    response = await fetchWithDeadline(`${endpoint}/api/agent-runtime/chat/${path}`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, 15_000);
   } catch (error) {
     throw new NarraError(`Narra unreachable: ${safeErrorText(error instanceof Error ? error.message : error)}`, true);
   }

@@ -33,6 +33,7 @@ import type { NarraEvent } from './narra-api';
 import type { SyncedRoom } from './poller';
 import { gatewayEnabled } from './poller';
 import type { Store } from './queue';
+import { fetchWithDeadline } from './deadline';
 
 /** How long Synapse may hold one /sync open when nothing happens. */
 export const SYNC_TIMEOUT_MS = 25_000;
@@ -228,11 +229,10 @@ export async function fetchLogin(env: Env): Promise<MatrixLogin> {
   const token = (env.NARRA_AGENT_TOKEN ?? '').trim();
   let response: Response;
   try {
-    response = await fetch(`${narraBase(env)}/api/agent-runtime/matrix-credential`, {
+    response = await fetchWithDeadline(`${narraBase(env)}/api/agent-runtime/matrix-credential`, {
       method: 'POST',
       headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, 15_000);
   } catch (error) {
     throw new SyncError(`Narra unreachable: ${safeErrorText(error instanceof Error ? error.message : error)}`);
   }
@@ -267,10 +267,9 @@ export async function matrixSync(login: MatrixLogin, since: string | null, timeo
   if (since) url.searchParams.set('since', since);
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchWithDeadline(url, {
       headers: { authorization: `Bearer ${login.accessToken}` },
-      signal: AbortSignal.timeout(timeoutMs + 20_000),
-    });
+    }, timeoutMs + 20_000);
   } catch (error) {
     throw new SyncError(`homeserver unreachable: ${safeErrorText(error instanceof Error ? error.message : error)}`);
   }
@@ -313,12 +312,11 @@ export async function matrixCall(login: MatrixLogin, op: MatrixOp): Promise<Matr
   }
   let response: Response;
   try {
-    response = await fetch(url, {
+    response = await fetchWithDeadline(url, {
       method,
       headers: { authorization: `Bearer ${login.accessToken}`, 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
-    });
+    }, 15_000);
   } catch (error) {
     // It may or may not have reached the homeserver: the caller retries the same txn id.
     return { ok: false, status: 599, errcode: safeErrorText(error instanceof Error ? error.message : error).slice(0, 120) };
@@ -412,15 +410,14 @@ export class MatrixSync {
   }
 
   private async homeserver(login: MatrixLogin, method: string, path: string, body?: unknown): Promise<Response> {
-    return fetch(`${login.homeserverUrl}/_matrix/client/v3${path}`, {
+    return fetchWithDeadline(`${login.homeserverUrl}/_matrix/client/v3${path}`, {
       method,
       headers: {
         authorization: `Bearer ${login.accessToken}`,
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(10_000),
-    });
+    }, 10_000);
   }
 
   /** Registers (and re-asserts every 6 hours) the pusher and the wake rule. False: long-poll this round. */
