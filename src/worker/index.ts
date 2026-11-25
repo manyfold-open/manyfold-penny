@@ -46,7 +46,12 @@ import { gatewayEnabled } from './gateway/poller';
 export { RoomQueue } from './gateway/queue';
 export { NarraPoller } from './gateway/poller';
 export { MatrixSync } from './gateway/sync';
-import { handlePushRequest } from './gateway/sync';
+import { pennyKit, routePush } from './kit';
+
+// narra-agent-kit's Durable Objects (kit.ts), for the rooms in NARRA_PIPELINE_ROOMS only.
+// Declared here, statically, so wrangler and the Vite plugin find them.
+export class NarraMatrixSync extends pennyKit.NarraMatrixSync {}
+export class NarraRoomCoordinator extends pennyKit.NarraRoomCoordinator {}
 
 const SERVICE = 'manyfold-penny';
 
@@ -202,6 +207,8 @@ app.get('/api/gateway/status', async (c) => {
   const sync = env.MATRIX_SYNC
     ? await (await env.MATRIX_SYNC.get(env.MATRIX_SYNC.idFromName('narra')).fetch('https://matrix-sync/status')).json()
     : null;
+  // narra-agent-kit (kit.ts): redacted, never tokens or message text.
+  const kit = await pennyKit.getNarraGatewayStatus(env).catch(() => null);
   return c.json({
     config: {
       NARRA_GATEWAY: (env.NARRA_GATEWAY ?? '').trim() || null,
@@ -212,6 +219,7 @@ app.get('/api/gateway/status', async (c) => {
     poller,
     sync,
     queues,
+    kit,
   });
 });
 
@@ -245,6 +253,8 @@ app.all('*', (c) => c.env.ASSETS.fetch(c.req.raw));
  * call when the gateway is off, apart from stopping a poller that was left running.
  */
 async function scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+  // The kit's sync reader and scheduled turns (kit.ts). No calls at all while NARRA_GATEWAY_ENABLED is off.
+  await pennyKit.kickNarraGateway(env).catch((error) => console.error('kit kick failed', error));
   if (!env.NARRA_POLLER) return;
   if (!gatewayEnabled(env) && !(env.NARRA_GATEWAY ?? '').trim()) return;
   await env.NARRA_POLLER.get(env.NARRA_POLLER.idFromName('narra')).fetch('https://narra-poller/kick');
@@ -252,8 +262,9 @@ async function scheduled(_controller: ScheduledController, env: Env): Promise<vo
   if (env.MATRIX_SYNC) await env.MATRIX_SYNC.get(env.MATRIX_SYNC.idFromName('narra')).fetch('https://matrix-sync/kick');
 }
 
-/** Synapse wakes MatrixSync at /_matrix/push/v1/notify (push mode); everything else is the app. */
+/** Synapse wakes MatrixSync, or the kit's sync reader, at /_matrix/push/v1/notify (push mode, see
+ *  routePush in kit.ts); everything else is the app. */
 const fetchHandler: typeof app.fetch = async (request, env, ctx) =>
-  (env ? await handlePushRequest(request, env as Env) : null) ?? app.fetch(request, env, ctx);
+  (env ? await routePush(request, env as Env) : null) ?? app.fetch(request, env, ctx);
 
 export default { fetch: fetchHandler, scheduled };

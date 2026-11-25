@@ -43,6 +43,12 @@ The template is designed to be extended and reshaped; these are the load-bearing
      only in the `MatrixSync` object's memory: never stored, logged or returned, and sent only to
      an https `*.netmind.chat` homeserver. Everything else that acts as Penny on Matrix (sends,
      edits, typing, read receipts) asks `MatrixSync` to do it (`POST /matrix`);
+   - the rooms in `NARRA_PIPELINE_ROOMS` ("zack test") are served by narra-agent-kit's v2 pipeline
+     instead (`src/worker/kit.ts`): its `NarraMatrixSync` holds its own copy of the login the same
+     way. Penny's gateway skips those rooms (`gateway/handoff.ts`) and the kit ignores every other
+     one (`NARRA_PIPELINE_ONLY_LISTED=on`), so each room has exactly one gateway. Both pushers share
+     `/_matrix/push/v1/notify` and are told apart by pushkey (`routePush`); never let one handler
+     answer the other's pushkey, or Synapse deletes that pusher;
    - A2A `messageId`s are derived from stored rows, not random, so retries cannot
      double-bill (`src/worker/chat.ts`).
    - in a room on a real homeserver, every ledger change (`add`, `edit`, `delete`, `settle`,
