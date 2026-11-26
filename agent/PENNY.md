@@ -109,7 +109,10 @@ run step 1 with `--mentioned`. Skip step 0 for these messages; it is for gateway
      asks (see "Reading the chat history").
 1. **Check permission.** `node bin/narra.mjs authorize --room <room> --sender <sender>
    --event <message_id>`, adding `--mentioned` when the message mentions you, which every group
-   message from the Manyfold channel does (see above). If it does not
+   message from the Manyfold channel does (see above). When the context block has
+   `unaddressed_ok: true` and the message does not mention you, add `--allow-unmentioned` instead
+   (never both): the gateway decided this group message is for you, and the platform allows
+   Penny to act on it as long as every other check passes. If it does not
    print `"allow": true`, stop: if it returned `notice.send: true`, reply with exactly
    `notice.text` and nothing else; otherwise reply with nothing at all. Do not run any other tool,
    and do not read or remember anything from the message.

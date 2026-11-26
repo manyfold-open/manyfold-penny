@@ -333,6 +333,12 @@ describe("Penny's envelope on the kit", () => {
     expect(await pennyEnvelopeFields(env, event({ text: '£30' }), decision('explicit_mention'), context(), { pipeline: 'v1' })).toBeUndefined();
   });
 
+  it('marks group turns so Penny may act without an @ (authorize --allow-unmentioned)', async () => {
+    const fields = (await pennyEnvelopeFields(env, event({ text: '我付了午餐 £30' }), decision('v2_agent_hint'), context(), { pipeline: 'v2' }))!;
+    expect(fields.gateway_verdict).toBe('expense');
+    expect(fields.unaddressed_ok).toBe('true');
+  });
+
   it("gives the old gateway's verdict and an actor token the ledger accepts", async () => {
     const fields = (await pennyEnvelopeFields(env, event({ text: '@Penny 晚餐 £30' }), decision('explicit_mention'), context(), { pipeline: 'v2' }))!;
     expect(fields.gateway_verdict).toBe('called');
