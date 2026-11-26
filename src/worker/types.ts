@@ -3,7 +3,9 @@
  * if you add a binding there, add it here too.
  */
 
-export interface Env {
+import type { NarraGatewayEnv } from '@manyfold/narra-agent-kit/worker';
+
+export interface Env extends NarraGatewayEnv {
   /** Static build output in dist/client. Non-/api/ requests are served from here. */
   ASSETS: Fetcher;
   /** D1 database. The starter uses five tables; the rest is yours. */
@@ -46,6 +48,13 @@ export interface Env {
   NARRA_PUSH_URL?: string;
   /** Random secret (>= 16 chars); the pusher's pushkey is derived from it. */
   NARRA_PUSH_SECRET?: string;
+
+  /* narra-agent-kit's chat-native (v2) gateway (src/worker/kit.ts), for the rooms in
+   * NARRA_PIPELINE_ROOMS only; Penny's own gateway keeps every other room (gateway/handoff.ts).
+   * NARRA_GATEWAY_ENABLED, NARRA_PIPELINE, NARRA_PIPELINE_ROOMS, NARRA_PIPELINE_ONLY_LISTED,
+   * NARRA_SYNC_DO, NARRA_ROOM_DO and AI come from NarraGatewayEnv. */
+  /** Penny's Matrix user id, e.g. @agent-54ebea3a:matrix.netmind.chat */
+  NARRA_MATRIX_ID?: string;
 }
 
 /** Everything needed to talk to one agent over A2A. */

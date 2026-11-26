@@ -13,6 +13,7 @@
  */
 
 import type { Env } from '../types';
+import { handledByKit } from './handoff';
 import { pennyDeps } from './deps';
 import type { InboundMessage } from './inbound';
 import { isNarraAgent, type Verdict } from './filter';
@@ -491,6 +492,8 @@ export class RoomQueue {
       return Response.json({ ok: true });
     }
     const item = (await request.json()) as Omit<QueuedMessage, 'attempts'>;
+    // A room served by narra-agent-kit (handoff.ts) never gets a turn, receipt or typing from here.
+    if (handledByKit(this.env, item.message?.roomId ?? '')) return Response.json({ result: 'handed-off' });
     const result = await enqueue(this.store(), item);
     if (result === 'queued' && (await this.state.storage.getAlarm()) === null) {
       await this.state.storage.setAlarm(Date.now());
@@ -499,6 +502,10 @@ export class RoomQueue {
   }
 
   async alarm(): Promise<void> {
+    // Turns queued before this room moved to narra-agent-kit: drop them unanswered.
+    const queued = await this.state.storage.list<QueuedMessage>({ prefix: 'q:' });
+    const handedOff = [...queued].filter(([, item]) => handledByKit(this.env, item?.message?.roomId ?? '')).map(([key]) => key);
+    for (let i = 0; i < handedOff.length; i += 128) await this.state.storage.delete(handedOff.slice(i, i + 128));
     const base = pennyDeps(this.env);
     const storage = this.state.storage;
     // Log lines and timings are written in order, one after another, so none is lost.

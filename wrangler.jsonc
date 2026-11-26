@@ -36,13 +36,20 @@
       { "name": "NARRA_POLLER", "class_name": "NarraPoller" },
       { "name": "ROOM_QUEUE", "class_name": "RoomQueue" },
       // Reads Narra in real time through Matrix /sync; off unless NARRA_SYNC is "on".
-      { "name": "MATRIX_SYNC", "class_name": "MatrixSync" }
+      { "name": "MATRIX_SYNC", "class_name": "MatrixSync" },
+      // narra-agent-kit's chat-native (v2) gateway (src/worker/kit.ts), only for the rooms in
+      // NARRA_PIPELINE_ROOMS: one /sync reader and one coordinator per room.
+      { "name": "NARRA_SYNC_DO", "class_name": "NarraMatrixSync" },
+      { "name": "NARRA_ROOM_DO", "class_name": "NarraRoomCoordinator" }
     ]
   },
   "migrations": [
     { "tag": "v1-narra-gateway", "new_sqlite_classes": ["NarraPoller", "RoomQueue"] },
-    { "tag": "v2-matrix-sync", "new_sqlite_classes": ["MatrixSync"] }
+    { "tag": "v2-matrix-sync", "new_sqlite_classes": ["MatrixSync"] },
+    { "tag": "v3-narra-agent-kit", "new_sqlite_classes": ["NarraMatrixSync", "NarraRoomCoordinator"] }
   ],
+  // Workers AI: the kit's relevance scoring (one small multilingual embedding per unaddressed message).
+  "ai": { "binding": "AI" },
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
     // Manyfold API base. Point at https://api-staging.manyfold.ai via .dev.vars for local dev.
@@ -60,7 +67,16 @@
     // Needs the NARRA_PUSH_SECRET secret (>= 16 chars); without it MatrixSync keeps long-polling.
     "NARRA_SYNC_MODE": "push",
     "NARRA_PUSH_URL": "https://manyfold-penny.netmind-ai.workers.dev",
-    "PENNY_AGENT_ID": "agt_agq6jhpwszzvfiqu6djcbe2ola"
+    "PENNY_AGENT_ID": "agt_agq6jhpwszzvfiqu6djcbe2ola",
+    // narra-agent-kit's chat-native pipeline (src/worker/kit.ts) serves ONLY the rooms listed in
+    // NARRA_PIPELINE_ROOMS ("zack test"); NARRA_PIPELINE_ONLY_LISTED makes it ignore every other room,
+    // and Penny's own gateway skips the listed ones (gateway/handoff.ts). It shares NARRA_SYNC,
+    // NARRA_SYNC_MODE, NARRA_PUSH_URL, NARRA_PUSH_SECRET and NARRA_AGENT_TOKEN with Penny's gateway;
+    // its pusher has its own app_id and pushkey (routePush in kit.ts). "off" gives the room back.
+    "NARRA_GATEWAY_ENABLED": "on",
+    "NARRA_PIPELINE": "v2",
+    "NARRA_PIPELINE_ROOMS": "!ttLCzSZsdFiPSEPDyO:matrix.netmind.chat",
+    "NARRA_PIPELINE_ONLY_LISTED": "on"
   }
   // Optional hardening, neither is required to deploy:
   //   npx wrangler secret put ADMIN_PASSWORD          # locks the app behind a password

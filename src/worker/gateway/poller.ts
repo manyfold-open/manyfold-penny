@@ -25,6 +25,7 @@ import { correctSplitPreview, isReadOnlyHeadcountCorrection } from './split-prev
 import type { Store } from './queue';
 import { addSample, summarizeAll, type Samples } from './metrics';
 import { dailyFromLedger } from './daily';
+import { handledByKit } from './handoff';
 
 export const TICK_MS = 4_000;
 export const ACTIVE_EVERY_MS = 8_000;
@@ -80,6 +81,9 @@ export interface Sink {
   /** Notify the room's queue that a newer non-agent human message arrived in the room. */
   humanActivity?(roomId: string, eventId: string): Promise<void>;
   log(line: string): void;
+  /** Rooms another gateway serves (narra-agent-kit's v2 pipeline, see handoff.ts): never read,
+   *  answered, reminded, recapped or welcomed here. Without it, every room is Penny's. */
+  skipRoom?(roomId: string): boolean;
   /** Seconds from a message being sent to the gateway reading it. */
   readLag?(seconds: number): void;
 }
@@ -444,8 +448,8 @@ export async function ingest(store: Store, sink: Sink, rooms: SyncedRoom[], now 
   if (!state) return;
   for (const synced of rooms) {
     const room = state.rooms.find((r) => r.roomId === synced.roomId);
+    if (!room || sink.skipRoom?.(synced.roomId)) continue;
     let s = await store.get<RoomState>(roomKey(synced.roomId));
-    if (!room) continue;
     if (!s?.cursor) {
       // Not started yet. Only a room MatrixSync just joined from an invite is read from /sync now,
       // so the message that came with the invite (a new user's first DM) is answered; the poller
@@ -496,12 +500,14 @@ export async function tick(store: Store, api: NarraApi, sink: Sink, now = Date.n
     }
   }
 
-  await sendDaily(store, sink, state.rooms, now);
+  // Rooms handed to the kit stay in the stored list (for /api/gateway/status) but are never read.
+  const mine = sink.skipRoom ? state.rooms.filter((r) => !sink.skipRoom!(r.roomId)) : state.rooms;
+  await sendDaily(store, sink, mine, now);
 
   // The room that is most overdue. New rooms start due now.
   let due: { room: NarraRoom; s: RoomState } | null = null;
   let soonest = Infinity;
-  for (const room of state.rooms) {
+  for (const room of mine) {
     const s = (await store.get<RoomState>(roomKey(room.roomId))) ?? { cursor: null, nextPollAt: 0, lastActivity: 0 };
     if (s.nextPollAt <= now && (!due || s.nextPollAt < due.s.nextPollAt)) due = { room, s };
     soonest = Math.min(soonest, s.nextPollAt);
@@ -615,6 +621,20 @@ export class NarraPoller {
       });
       return Response.json({ ok: true });
     }
+    if (request && path.endsWith('/room-info')) {
+      // For the kit's welcome (kit.ts): whether this gateway ever started or welcomed the room,
+      // and its type from the room list. No message text.
+      const roomId = new URL(request.url).searchParams.get('room') ?? '';
+      const rooms = await this.state.storage.get<RoomsState>('rooms');
+      const room = rooms?.rooms.find((r) => r.roomId === roomId);
+      const s = await this.state.storage.get<RoomState>(roomKey(roomId));
+      return Response.json({
+        listed: Boolean(room),
+        type: room?.type ?? null,
+        started: Boolean(s?.cursor),
+        welcomed: Boolean(await this.state.storage.get(welcomedKey(roomId))),
+      });
+    }
     if (request?.method === 'POST' && path.endsWith('/log')) {
       const body = (await request.json().catch(() => null)) as { line?: unknown } | null;
       if (typeof body?.line === 'string') await remember(this.state.storage, body.line.slice(0, 500));
@@ -708,6 +728,7 @@ export class NarraPoller {
           body: JSON.stringify({ eventId }),
         });
       },
+      skipRoom: (roomId) => handledByKit(env, roomId),
       log: (line) => {
         console.log(`[poller] ${line}`);
         later(() => remember(storage, line));
