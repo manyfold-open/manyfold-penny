@@ -74,9 +74,9 @@ describe('which gateway owns a room', () => {
     expect(handledByKit(env, '')).toBe(false);
   });
 
-  it('is deployed with the kit limited to "zack test" and on v2 there', () => {
+  it('is deployed with the kit limited to "zack test" and "Netmind London" and on v2 there', () => {
     const wrangler = readFileSync('wrangler.jsonc', 'utf8');
-    expect(wrangler).toContain(`"NARRA_PIPELINE_ROOMS": "${ZACK_TEST}"`);
+    expect(wrangler).toContain(`"NARRA_PIPELINE_ROOMS": "${ZACK_TEST},!IftiIDGVmOgoqhisoa:matrix.netmind.chat"`);
     expect(wrangler).toContain('"NARRA_PIPELINE_ONLY_LISTED": "on"');
     expect(wrangler).toContain('"NARRA_PIPELINE": "v2"');
     expect(wrangler).toContain('"NARRA_GATEWAY_ENABLED": "on"');
