@@ -67,7 +67,7 @@
     // Needs the NARRA_PUSH_SECRET secret (>= 16 chars); without it MatrixSync keeps long-polling.
     "NARRA_SYNC_MODE": "push",
     "NARRA_PUSH_URL": "https://manyfold-penny.netmind-ai.workers.dev",
-    "PENNY_AGENT_ID": "agt_agq6jhpwszzvfiqu6djcbe2ola",
+    "PENNY_AGENT_ID": "agt_agrbonsbdn5wtdhrvskhurpspu",
     // narra-agent-kit's chat-native pipeline (src/worker/kit.ts) serves ONLY the rooms listed in
     // NARRA_PIPELINE_ROOMS ("zack test"); NARRA_PIPELINE_ONLY_LISTED makes it ignore every other room,
     // and Penny's own gateway skips the listed ones (gateway/handoff.ts). It shares NARRA_SYNC,
