@@ -69,13 +69,13 @@
     "NARRA_PUSH_URL": "https://manyfold-penny.netmind-ai.workers.dev",
     "PENNY_AGENT_ID": "agt_agrbonsbdn5wtdhrvskhurpspu",
     // narra-agent-kit's chat-native pipeline (src/worker/kit.ts) serves ONLY the rooms listed in
-    // NARRA_PIPELINE_ROOMS ("zack test"); NARRA_PIPELINE_ONLY_LISTED makes it ignore every other room,
+    // NARRA_PIPELINE_ROOMS ("zack test", "Netmind London"); NARRA_PIPELINE_ONLY_LISTED makes it ignore every other room,
     // and Penny's own gateway skips the listed ones (gateway/handoff.ts). It shares NARRA_SYNC,
     // NARRA_SYNC_MODE, NARRA_PUSH_URL, NARRA_PUSH_SECRET and NARRA_AGENT_TOKEN with Penny's gateway;
     // its pusher has its own app_id and pushkey (routePush in kit.ts). "off" gives the room back.
     "NARRA_GATEWAY_ENABLED": "on",
     "NARRA_PIPELINE": "v2",
-    "NARRA_PIPELINE_ROOMS": "!ttLCzSZsdFiPSEPDyO:matrix.netmind.chat",
+    "NARRA_PIPELINE_ROOMS": "!ttLCzSZsdFiPSEPDyO:matrix.netmind.chat,!IftiIDGVmOgoqhisoa:matrix.netmind.chat",
     "NARRA_PIPELINE_ONLY_LISTED": "on"
   }
   // Optional hardening, neither is required to deploy:
