@@ -169,6 +169,10 @@ export async function pennyEnvelopeFields(
   }
   // Signed for this room and this sender: the ledger's proof of who is speaking (ledger/actor.ts).
   if (event.senderId) fields.actor_token = await actorToken(env, event.roomId, event.senderId);
+  // In kit rooms Penny also handles group messages that do not @ her (Narra agreed, 2026-11-26).
+  // PENNY.md step 1 then runs authorize with --allow-unmentioned, which accepts only the
+  // `not_mentioned` denial; every other check still applies. Set only by this gateway.
+  if (context.chatType === 'group' && event.senderId) fields.unaddressed_ok = 'true';
   return fields;
 }
 

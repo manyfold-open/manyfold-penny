@@ -2,7 +2,7 @@
 // Penny's link to Narra Messenger. Uses the Narra agent bearer that the bind handoff wrote to
 // .narra/<agent>/agent-runtime-token. Never prints the token.
 //
-//   node bin/narra.mjs authorize --room <room_id> --sender <matrix user id> [--event <event_id>] [--mentioned]
+//   node bin/narra.mjs authorize --room <room_id> --sender <matrix user id> [--event <event_id>] [--mentioned] [--allow-unmentioned]
 //   node bin/narra.mjs members --room <room_id>
 //   node bin/narra.mjs rooms [--type group|dm|all]
 //   node bin/narra.mjs send-image --room <room_id> --file <path>
@@ -111,6 +111,14 @@ async function authorize(flags) {
     data = JSON.parse(text);
   } catch {
     data = null;
+  }
+  // --allow-unmentioned (Narra platform agreed, 2026-11-26): in rooms on narra-agent-kit, Penny also
+  // handles group messages that do not @ her. Narra checks the mention last, after the sender's
+  // account, blocks, binding and group membership, so a `not_mentioned` denial means every other
+  // check passed. Only that one reason is accepted; every other denial still stops Penny.
+  if (flags['allow-unmentioned'] === true && body.mentioned === false && data?.allow !== true && data?.reason === 'not_mentioned') {
+    process.stdout.write(`${JSON.stringify({ allow: true, reason: 'unmentioned_accepted' })}\n`);
+    return;
   }
   if (!response.ok || !data || data.allow !== true) {
     process.stdout.write(`${JSON.stringify({ allow: false, status: response.status, notice: data?.notice ?? null, reason: data?.reason ?? null })}\n`);
