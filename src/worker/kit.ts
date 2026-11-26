@@ -79,6 +79,33 @@ export function isShortAnswer(text: string): boolean {
 
 /* ───────── ledger reads ───────── */
 
+/**
+ * Whether `memberId` could OK something waiting in this group, by the ledger's own confirm rules
+ * (store.ts checkConfirmer): never the proposer; someone on the entry if anyone else is; the
+ * receiver of a repayment. Only they can answer a proposal with a short "OK".
+ */
+export async function canConfirmPending(env: Env, roomId: string, memberId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT 1 AS p FROM ledger_expenses e
+     WHERE e.group_id = ?1 AND e.status = 'pending' AND e.created_by != ?2
+       AND (
+         EXISTS (SELECT 1 FROM ledger_payers p WHERE p.expense_id IN (e.id, e.replaces_id) AND p.member_id = ?2)
+         OR EXISTS (SELECT 1 FROM ledger_shares s WHERE s.expense_id IN (e.id, e.replaces_id) AND s.member_id = ?2)
+         OR NOT EXISTS (
+           SELECT 1 FROM ledger_payers p WHERE p.expense_id IN (e.id, e.replaces_id) AND p.member_id != e.created_by
+           UNION ALL
+           SELECT 1 FROM ledger_shares s WHERE s.expense_id IN (e.id, e.replaces_id) AND s.member_id != e.created_by
+         )
+       )
+     UNION ALL
+     SELECT 1 FROM ledger_settlements WHERE group_id = ?1 AND status = 'pending' AND to_member = ?2
+     LIMIT 1`,
+  )
+    .bind(roomId, memberId)
+    .first<{ p: number }>();
+  return Boolean(row);
+}
+
 export async function hasPending(env: Env, roomId: string): Promise<boolean> {
   const row = await env.DB.prepare(
     "SELECT 1 AS p FROM ledger_expenses WHERE group_id = ? AND status = 'pending' UNION ALL SELECT 1 FROM ledger_settlements WHERE group_id = ? AND status = 'pending' LIMIT 1",
@@ -101,15 +128,18 @@ function addressed(event: InboundEvent, context: RoomContext): boolean {
 
 /**
  * From Penny's own state, not phrase lists: wake for an amount (a number with a currency or unit),
- * a photo with a caption (it may be a receipt), or a short answer while the group has a proposal
- * waiting for an OK. Everything else is left to the kit (mentions, replies, relevance).
+ * a photo with a caption (it may be a receipt), or a short answer from someone a waiting proposal
+ * needs an OK from. Everything else is left to the kit (mentions, replies, relevance).
  */
 export async function pennyWakeHint(env: Env, event: InboundEvent, context: RoomContext): Promise<'wake' | null> {
   if (addressed(event, context) || isAimedElsewhere(event, context, PENNY_SPEC)) return null;
   const text = event.text ?? '';
   if (hasAmount(text)) return 'wake';
   if (event.kind === 'image' || event.kind === 'compound') return 'wake';
-  if (isShortAnswer(text) && (await hasPending(env, event.roomId).catch(() => false))) return 'wake';
+  // Only someone who can OK a waiting proposal: everyone else's short messages are not for Penny.
+  if (isShortAnswer(text) && event.senderId && (await canConfirmPending(env, event.roomId, event.senderId).catch(() => false))) {
+    return 'wake';
+  }
   return null;
 }
 
