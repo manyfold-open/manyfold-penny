@@ -294,7 +294,7 @@ describe('when Penny wakes on her own state', () => {
           `INSERT INTO ledger_expenses (id, group_id, seq, version, kind, status, description, category, amount, currency, spent_on, split, created_by, created_at)
            VALUES ('e1', ?, 21, 1, 'expense', 'pending', 'dinner', 'food', 3000, 'GBP', '2026-11-25', '{}', ?, '2026-11-25T12:00:00Z')`,
         )
-        .bind(ZACK_TEST, MEI)
+        .bind(ZACK_TEST, ZACK)
         .run();
     }
     return { ...kitOn, ...env } as unknown as Env;
@@ -309,6 +309,19 @@ describe('when Penny wakes on her own state', () => {
     expect(await pennyWakeHint(waiting, event({ text: 'OK #21' }), context())).toBe('wake');
     expect(await pennyWakeHint(waiting, event({ text: '今天天氣不錯，等一下要去哪裡逛街呢' }), context())).toBeNull();
     expect(await pennyWakeHint(waiting, event({ kind: 'compound', text: '收據' }), context())).toBe('wake');
+    // Zack proposed #21: his own short messages are not answers to it.
+    expect(await pennyWakeHint(waiting, event({ senderId: ZACK, text: '肚子餓了 有啥可以吃' }), context())).toBeNull();
+    expect(await pennyWakeHint(waiting, event({ senderId: ZACK, text: '好' }), context())).toBeNull();
+  });
+
+  it('with people on the entry, only they can wake Penny with a short answer', async () => {
+    const env = await d1WithPending(true);
+    const OTHER = '@sp-other:matrix.netmind.chat';
+    const db = (env as unknown as { DB: FakeD1 }).DB;
+    await db.prepare(`INSERT INTO ledger_shares (expense_id, member_id, amount) VALUES ('e1', ?, 1500)`).bind(ZACK).run();
+    await db.prepare(`INSERT INTO ledger_shares (expense_id, member_id, amount) VALUES ('e1', ?, 1500)`).bind(OTHER).run();
+    expect(await pennyWakeHint(env, event({ senderId: OTHER, text: 'OK' }), context())).toBe('wake');
+    expect(await pennyWakeHint(env, event({ senderId: MEI, text: 'OK' }), context())).toBeNull();
   });
 
   it('leaves addressed and aimed-elsewhere messages to the kit', async () => {
